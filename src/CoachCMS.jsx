@@ -15,6 +15,44 @@ import { useEffect, useMemo, useRef, useState } from "react";
 const API_BASE = import.meta.env.VITE_API_URL || "https://no-rules-api-production.up.railway.app";
 const TOKEN_KEY = "nrn_token";
 
+
+function Sparkline({ values, width = 520, height = 120, stroke = "#36d399", fill = "transparent" }) {
+  const pad = 10;
+  const w = width - pad * 2;
+  const h = height - pad * 2;
+  if (!values || values.length < 2) {
+    return (
+      <svg width={width} height={height} style={{ display: "block" }}>
+        <rect x={0} y={0} width={width} height={height} rx={12} fill={`${T.bg}00`} stroke={`${T.border}`} />
+        <text x={width / 2} y={height / 2} textAnchor="middle" fill={T.muted} fontSize="12" fontFamily="DM Sans">Not enough data</text>
+      </svg>
+    );
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(1e-6, max - min);
+  const pts = values
+    .map((v, i) => {
+      const x = pad + (i / (values.length - 1)) * w;
+      const y = pad + (1 - (v - min) / range) * h;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(" ");
+
+  return (
+    <svg width={width} height={height} style={{ display: "block" }}>
+      <rect x={0} y={0} width={width} height={height} rx={12} fill={`${T.bg}00`} stroke={`${T.border}`} />
+      <polyline points={pts} fill={fill} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MoodSparkline({ moods, width = 520, height = 120 }) {
+  // moods are 1..5, show as line (higher = better)
+  const vals = (moods || []).map((m) => Number(m.mood_id || m.id || 0)).filter((n) => Number.isFinite(n) && n > 0);
+  return <Sparkline values={vals} width={width} height={height} stroke={T.accent} />;
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Theme + constants
 ────────────────────────────────────────────────────────────────────────────── */
@@ -833,101 +871,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Client Data Panels (coach view)
-   - /profiles/:athleteId
-   - /weights/:athleteId
-   - /moods/:athleteId
-   - /meal-plans/:athleteId
 ────────────────────────────────────────────────────────────────────────────── */
-
-function AthleteProfilePanel({ athleteId, token }) {
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
-  const [ok, setOk] = useState(false);
-  const [profile, setProfile] = useState({ goal: "", heightCm: "", currentWeightKg: "", mfpUsername: "" });
-
-  useEffect(() => {
-    let ignore = false;
-    const load = async () => {
-      if (!athleteId) return;
-      setLoading(true);
-      setErr("");
-      try {
-        const p = await apiFetch(`/profiles/${athleteId}`, token);
-        if (ignore) return;
-        setProfile({
-          goal: p?.goal ?? "",
-          heightCm: p?.heightCm ?? "",
-          currentWeightKg: p?.currentWeightKg ?? "",
-          mfpUsername: p?.mfpUsername ?? "",
-        });
-      } catch (e) {
-        setErr(e.message);
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    };
-    load();
-    return () => {
-      ignore = true;
-    };
-  }, [athleteId]);
-
-  const set = (k) => (e) => setProfile((p) => ({ ...p, [k]: e.target.value }));
-
-  const save = async () => {
-    setSaving(true);
-    setErr("");
-    setOk(false);
-    try {
-      await apiFetch(`/profiles/${athleteId}`, token, { method: "PUT", body: JSON.stringify(profile) });
-      setOk(true);
-      setTimeout(() => setOk(false), 1800);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CLIENT PROFILE</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Live data from the client app.</div>
-        </div>
-        <button onClick={save} disabled={saving} style={{ background: saving ? T.border : T.accent, border: "none", borderRadius: 10, padding: "8px 16px", color: saving ? T.muted : T.bg, fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: saving ? "default" : "pointer" }} type="button">
-          {saving ? "SAVING…" : "SAVE"}
-        </button>
-      </div>
-
-      {ok && <div style={{ marginBottom: 12, background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.coachGreen }}>✓ Saved.</div>}
-      {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div>
-          <label style={labelStyle}>Goal</label>
-          <input value={profile.goal} onChange={set("goal")} placeholder="e.g. Fat loss" style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>Height (cm)</label>
-          <input value={profile.heightCm} onChange={set("heightCm")} placeholder="e.g. 178" style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>Current weight (kg)</label>
-          <input value={profile.currentWeightKg} onChange={set("currentWeightKg")} placeholder="e.g. 82.5" style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>MFP username</label>
-          <input value={profile.mfpUsername} onChange={set("mfpUsername")} placeholder="e.g. alexmorgan" style={inputStyle} />
-        </div>
-      </div>
-
-      {loading && <div style={{ marginTop: 10, fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Loading…</div>}
-    </div>
-  );
-}
 
 function AthleteWeightsPanel({ athleteId, token }) {
   const [loading, setLoading] = useState(false);
@@ -953,11 +897,13 @@ function AthleteWeightsPanel({ athleteId, token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId]);
 
+  const series = [...weights].reverse().map((w) => Number(w.kg)).filter((n) => Number.isFinite(n));
+
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEIGHT CHECK‑INS</div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEIGHT TREND</div>
           <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Latest: {weights?.[0]?.kg ?? "—"} kg</div>
         </div>
         <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
@@ -965,7 +911,9 @@ function AthleteWeightsPanel({ athleteId, token }) {
 
       {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
 
-      <div style={{ maxHeight: 320, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+      <Sparkline values={series} width={520} height={120} stroke={T.coachGreen} />
+
+      <div style={{ maxHeight: 240, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12, marginTop: 12 }}>
         {loading ? (
           <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
         ) : weights.length === 0 ? (
@@ -1007,11 +955,13 @@ function AthleteMoodPanel({ athleteId, token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId]);
 
+  const series = [...moods].reverse().map((m) => Number(m.mood_id)).filter((n) => Number.isFinite(n));
+
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD LOG</div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD TREND</div>
           <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Latest: {moods?.[0]?.label ?? "—"}</div>
         </div>
         <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
@@ -1019,7 +969,9 @@ function AthleteMoodPanel({ athleteId, token }) {
 
       {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
 
-      <div style={{ maxHeight: 320, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+      <Sparkline values={series} width={520} height={120} stroke={T.accent} />
+
+      <div style={{ maxHeight: 240, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12, marginTop: 12 }}>
         {loading ? (
           <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
         ) : moods.length === 0 ? (
@@ -1029,91 +981,9 @@ function AthleteMoodPanel({ athleteId, token }) {
             <div key={m.date} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}22` }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12 }}>{m.date}</span>
-                <span style={{ color: m.color || T.text, fontFamily: "DM Sans", fontSize: 12 }}>{m.emoji} {m.label}</span>
+                <span style={{ color: m.color || T.text, fontFamily: "DM Sans", fontSize: 12 }}>{m.emoji} {m.label} ({m.mood_id})</span>
               </div>
               {m.note ? <div style={{ marginTop: 6, color: T.muted, fontSize: 12 }}>{m.note}</div> : null}
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AthleteMealPlanPanel({ athleteId, token }) {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const [plan, setPlan] = useState(null);
-  const [day, setDay] = useState("MON");
-  const [meal, setMeal] = useState("Breakfast");
-
-  const load = async () => {
-    if (!athleteId) return;
-    setLoading(true);
-    setErr("");
-    try {
-      const data = await apiFetch(`/meal-plans/${athleteId}`, token);
-      setPlan(data?.plan ?? null);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const meals = ["Breakfast", "Lunch", "Dinner", "Snack"];
-  const dayFoods = (plan?.[day]?.[meal] ?? []).slice();
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>NUTRITION LOG</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Foods logged in the client app.</div>
-        </div>
-        <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
-      </div>
-
-      {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-        <div>
-          <label style={labelStyle}>Day</label>
-          <select value={day} onChange={(e) => setDay(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
-            {DAYS.map((d) => (
-              <option key={d} value={d} style={{ background: T.bg }}>{d}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label style={labelStyle}>Meal</label>
-          <select value={meal} onChange={(e) => setMeal(e.target.value)} style={{ ...inputStyle, cursor: "pointer" }}>
-            {meals.map((m) => (
-              <option key={m} value={m} style={{ background: T.bg }}>{m}</option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div style={{ maxHeight: 320, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
-        {loading ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
-        ) : !plan ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>No saved nutrition log found.</div>
-        ) : dayFoods.length === 0 ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>No foods logged for this meal.</div>
-        ) : (
-          dayFoods.map((f, i) => (
-            <div key={i} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}22` }}>
-              <div style={{ fontWeight: 700, fontSize: 13, color: T.text }}>{f.name}</div>
-              <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11, color: T.muted, marginTop: 4 }}>
-                {f.grams}g · {f.calories} kcal · P {f.protein} · C {f.carbs} · F {f.fat}
-              </div>
             </div>
           ))
         )}
@@ -1144,10 +1014,8 @@ function AthleteDetail({ athlete, token, onBack }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
-    { id: "profile", label: "PROFILE" },
     { id: "weights", label: "WEIGHTS" },
     { id: "moods", label: "MOOD" },
-    { id: "meals", label: "NUTRITION LOG" },
   ];
 
   return (
@@ -1354,10 +1222,8 @@ function AthleteDetail({ athlete, token, onBack }) {
         <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
       )}
 
-      {tab === "profile" && (<AthleteProfilePanel athleteId={athlete.id} token={token} />)}
       {tab === "weights" && (<AthleteWeightsPanel athleteId={athlete.id} token={token} />)}
       {tab === "moods" && (<AthleteMoodPanel athleteId={athlete.id} token={token} />)}
-      {tab === "meals" && (<AthleteMealPlanPanel athleteId={athlete.id} token={token} />)}
     </div>
   );
 }

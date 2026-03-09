@@ -835,6 +835,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
    Client Data Panels (coach view)
    - /profiles/:athleteId
    - /weights/:athleteId
+   - /moods/:athleteId
    - /meal-plans/:athleteId
 ────────────────────────────────────────────────────────────────────────────── */
 
@@ -932,7 +933,6 @@ function AthleteWeightsPanel({ athleteId, token }) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [weights, setWeights] = useState([]);
-  const [newKg, setNewKg] = useState("");
 
   const load = async () => {
     if (!athleteId) return;
@@ -953,23 +953,6 @@ function AthleteWeightsPanel({ athleteId, token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId]);
 
-  const addToday = async () => {
-    setErr("");
-    const kg = Number(newKg);
-    if (!Number.isFinite(kg) || kg <= 0) {
-      setErr("Enter a valid weight.");
-      return;
-    }
-    const date = new Date().toISOString().slice(0, 10);
-    try {
-      const res = await apiFetch(`/weights/${athleteId}`, token, { method: "POST", body: JSON.stringify({ date, kg }) });
-      setWeights(Array.isArray(res) ? res : weights);
-      setNewKg("");
-    } catch (e) {
-      setErr(e.message);
-    }
-  };
-
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -982,12 +965,7 @@ function AthleteWeightsPanel({ athleteId, token }) {
 
       {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
 
-      <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-        <input value={newKg} onChange={(e) => setNewKg(e.target.value)} placeholder="kg" type="number" style={{ ...inputStyle, maxWidth: 160, fontFamily: "JetBrains Mono, ui-monospace" }} />
-        <button onClick={addToday} style={{ background: T.accent, border: "none", borderRadius: 10, padding: "10px 14px", color: T.bg, fontFamily: "Bebas Neue, system-ui", letterSpacing: 1.5, cursor: "pointer" }} type="button">+ Add today</button>
-      </div>
-
-      <div style={{ maxHeight: 280, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+      <div style={{ maxHeight: 320, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
         {loading ? (
           <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
         ) : weights.length === 0 ? (
@@ -997,6 +975,63 @@ function AthleteWeightsPanel({ athleteId, token }) {
             <div key={w.date} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}22`, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12 }}>
               <span style={{ color: T.muted }}>{w.date}</span>
               <span style={{ color: T.text }}>{w.kg} kg</span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AthleteMoodPanel({ athleteId, token }) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [moods, setMoods] = useState([]);
+
+  const load = async () => {
+    if (!athleteId) return;
+    setLoading(true);
+    setErr("");
+    try {
+      const m = await apiFetch(`/moods/${athleteId}`, token);
+      setMoods(Array.isArray(m) ? m : []);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId]);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD LOG</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Latest: {moods?.[0]?.label ?? "—"}</div>
+        </div>
+        <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
+      </div>
+
+      {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
+
+      <div style={{ maxHeight: 320, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+        {loading ? (
+          <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
+        ) : moods.length === 0 ? (
+          <div style={{ color: T.muted, fontSize: 12 }}>No moods yet.</div>
+        ) : (
+          moods.map((m) => (
+            <div key={m.date} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}22` }}>
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12 }}>{m.date}</span>
+                <span style={{ color: m.color || T.text, fontFamily: "DM Sans", fontSize: 12 }}>{m.emoji} {m.label}</span>
+              </div>
+              {m.note ? <div style={{ marginTop: 6, color: T.muted, fontSize: 12 }}>{m.note}</div> : null}
             </div>
           ))
         )}
@@ -1111,6 +1146,7 @@ function AthleteDetail({ athlete, token, onBack }) {
     { id: "macroplan", label: "MACRO PLAN" },
     { id: "profile", label: "PROFILE" },
     { id: "weights", label: "WEIGHTS" },
+    { id: "moods", label: "MOOD" },
     { id: "meals", label: "NUTRITION LOG" },
   ];
 
@@ -1320,6 +1356,7 @@ function AthleteDetail({ athlete, token, onBack }) {
 
       {tab === "profile" && (<AthleteProfilePanel athleteId={athlete.id} token={token} />)}
       {tab === "weights" && (<AthleteWeightsPanel athleteId={athlete.id} token={token} />)}
+      {tab === "moods" && (<AthleteMoodPanel athleteId={athlete.id} token={token} />)}
       {tab === "meals" && (<AthleteMealPlanPanel athleteId={athlete.id} token={token} />)}
     </div>
   );

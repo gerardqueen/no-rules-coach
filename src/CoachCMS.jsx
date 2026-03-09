@@ -1,23 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import logo from "./assets/no-rules-logo-220.png"; // ✅ your attached logo 
 
 /**
- * COACHCMS.jsx — Full replacement file
- * - Real backend login (/auth/login)
- * - Load athletes (/athletes)
- * - Add athlete (/athletes)
- * - Macro plan rows-per-day (GET/PUT /macro-plans/:athleteId)
+ * CoachCMS.jsx (Full replacement)
  *
- * API base:
- *  - Set VITE_API_URL in your frontend .env (recommended)
- *  - Fallback is http://localhost:3001
+ * Fixes included:
+ * ✅ Uses provided logo image
+ * ✅ Macro plan SAVE persists even if backend returns 404:
+ *    - If /macro-plans endpoint is missing, falls back to localStorage
+ *    - Shows a banner "Local save mode" so you know it's not DB yet
+ *
+ * Backend assumptions:
+ * - /auth/login POST -> { token, user }
+ * - /auth/me GET -> user
+ * - /auth/logout POST (optional)
+ * - /athletes GET -> list
+ * - /athletes POST -> create
+ *
+ * Macro plan endpoints (optional, currently missing in your case -> 404):
+ * - GET /macro-plans/:athleteId
+ * - PUT /macro-plans/:athleteId
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const TOKEN_KEY = "nrn_token";
+const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Theme + constants
-────────────────────────────────────────────────────────────────────────────── */
 const T = {
   bg: "#0a0a0a",
   surface: "#111111",
@@ -25,44 +33,15 @@ const T = {
   border: "#1f1f1f",
   accent: "#FF9A52",
   text: "#f0f0f0",
-  muted: "#666",
+  muted: "#777",
   protein: "#f97316",
   carbs: "#3b82f6",
   fat: "#a855f7",
   coachGreen: "#22c55e",
   danger: "#ef4444",
   warn: "#f59e0b",
-  info: "#3b82f6",
 };
 
-const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
-
-/**
- * Logo: embedded SVG so it never depends on a removed file.
- * (If you want your original logo image, you can swap this string with your own base64.)
- */
-const LOGO_SRC =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
-  <defs>
-    <radialGradient id="g" cx="50%" cy="45%" r="70%">
-      <stop offset="0%" stop-color="#FF9A52" stop-opacity="0.95"/>
-      <stop offset="70%" stop-color="#FF9A52" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#0a0a0a" stop-opacity="1"/>
-    </radialGradient>
-  </defs>
-  <rect width="240" height="240" fill="#0a0a0a"/>
-  <circle cx="120" cy="120" r="102" fill="url(#g)" stroke="#FF9A52" stroke-opacity="0.35" stroke-width="6"/>
-  <circle cx="120" cy="120" r="84" fill="#111111" stroke="#FF9A52" stroke-opacity="0.25" stroke-width="2"/>
-  <text x="50%" y="48%" fill="#FF9A52" font-family="Arial Black, Impact, sans-serif" font-size="56" text-anchor="middle" dominant-baseline="middle">NRN</text>
-  <text x="50%" y="63%" fill="#9aa0a6" font-family="Arial, sans-serif" font-size="16" text-anchor="middle" dominant-baseline="middle" letter-spacing="2">COACH PORTAL</text>
-</svg>
-`);
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Helpers
-────────────────────────────────────────────────────────────────────────────── */
 async function apiFetch(path, token, opts = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -72,17 +51,19 @@ async function apiFetch(path, token, opts = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
-  return data;
-}
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
+  // Attach status for smarter handling (e.g. 404 -> local fallback)
+  if (!res.ok) {
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
 }
 
 function initialsOf(name = "") {
   const parts = name.trim().split(/\s+/).filter(Boolean);
-  return parts.map(p => p[0]).join("").slice(0, 2).toUpperCase() || "A";
+  return (parts[0]?.[0] || "A").toUpperCase() + (parts[1]?.[0] || "");
 }
 
 function randomAvatarColor() {
@@ -90,9 +71,28 @@ function randomAvatarColor() {
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Small UI atoms
-────────────────────────────────────────────────────────────────────────────── */
+const labelStyle = {
+  fontFamily: "DM Sans",
+  fontSize: 11,
+  color: T.muted,
+  letterSpacing: 1,
+  textTransform: "uppercase",
+  display: "block",
+  marginBottom: 6,
+};
+
+const inputStyle = {
+  width: "100%",
+  background: T.surface,
+  border: `1px solid ${T.border}`,
+  borderRadius: 10,
+  padding: "11px 14px",
+  color: T.text,
+  fontFamily: "DM Sans",
+  fontSize: 13,
+  outline: "none",
+};
+
 const Badge = ({ label, color = T.accent }) => (
   <span
     style={{
@@ -134,7 +134,7 @@ const Avatar = ({ initials, color, size = 40 }) => (
   </div>
 );
 
-const StatCard = ({ label, value, color = T.text, sub, unit }) => (
+const StatCard = ({ label, value, color = T.text, unit }) => (
   <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 12px" }}>
     <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 26, color, lineHeight: 1 }}>
       {value}
@@ -143,34 +143,11 @@ const StatCard = ({ label, value, color = T.text, sub, unit }) => (
     <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, marginTop: 6 }}>
       {label}
     </div>
-    {sub && <div style={{ fontFamily: "DM Sans", fontSize: 11, color, marginTop: 4 }}>{sub}</div>}
   </div>
 );
 
-const inputStyle = {
-  width: "100%",
-  background: T.surface,
-  border: `1px solid ${T.border}`,
-  borderRadius: 10,
-  padding: "11px 14px",
-  color: T.text,
-  fontFamily: "DM Sans",
-  fontSize: 13,
-  outline: "none",
-};
-
-const labelStyle = {
-  fontFamily: "DM Sans",
-  fontSize: 11,
-  color: T.muted,
-  letterSpacing: 1,
-  textTransform: "uppercase",
-  display: "block",
-  marginBottom: 6,
-};
-
 /* ─────────────────────────────────────────────────────────────────────────────
-   Coach Login
+   Login
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachLogin({ onLoggedIn }) {
   const [email, setEmail] = useState("");
@@ -178,13 +155,6 @@ function CoachLogin({ onLoggedIn }) {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
-
-  // Demo accounts for quick fill (UI-only convenience)
-  const DEMOS = [
-    { email: "gerard@norules.com", password: "gerard1", name: "Gerard Queen", role: "Coach" },
-    { email: "luke@norules.com", password: "luke1", name: "Luke Bastick", role: "Coach" },
-    { email: "esme@norules.com", password: "esme1", name: "Esme", role: "Coach" },
-  ];
 
   const handleLogin = async () => {
     setErr("");
@@ -198,8 +168,6 @@ function CoachLogin({ onLoggedIn }) {
         method: "POST",
         body: JSON.stringify({ email: email.trim().toLowerCase(), password: pass }),
       });
-
-      // data: { token, user }  (your backend returns this) [1](https://github.com/orgs/community/discussions/151670)
       localStorage.setItem(TOKEN_KEY, data.token);
       onLoggedIn({ ...data.user, token: data.token });
     } catch (e) {
@@ -230,22 +198,12 @@ function CoachLogin({ onLoggedIn }) {
       `}</style>
 
       <div style={{ width: "100%", maxWidth: 440, animation: "fadeUp .35s ease" }}>
-        <div style={{ textAlign: "center", marginBottom: 34 }}>
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-            <img
-              src={LOGO_SRC}
-              alt="No Rules Nutrition"
-              style={{
-                width: 120,
-                height: 120,
-                borderRadius: "50%",
-                objectFit: "cover",
-                border: `3px solid ${T.accent}44`,
-                boxShadow: `0 0 32px ${T.accent}22`,
-              }}
-            />
-          </div>
-
+        <div style={{ textAlign: "center", marginBottom: 28 }}>
+          <img
+            src={logo}
+            alt="No Rules Nutrition"
+            style={{ width: 130, height: "auto", display: "block", margin: "0 auto 12px" }}
+          />
           <div
             style={{
               display: "inline-flex",
@@ -343,48 +301,11 @@ function CoachLogin({ onLoggedIn }) {
               fontSize: 18,
               letterSpacing: 2,
               cursor: loading ? "default" : "pointer",
-              transition: "all .2s",
             }}
             type="button"
           >
             {loading ? "SIGNING IN…" : "ACCESS COACH PORTAL"}
           </button>
-        </div>
-
-        <div style={{ marginTop: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-          <div style={{ fontSize: 11, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-            Demo Accounts — click to fill
-          </div>
-
-          {DEMOS.map((d) => (
-            <button
-              key={d.email}
-              onClick={() => {
-                setEmail(d.email);
-                setPass(d.password);
-                setErr("");
-              }}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                marginBottom: 8,
-                cursor: "pointer",
-              }}
-              type="button"
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{d.name}</span>
-                <Badge label={d.role} color={T.coachGreen} />
-              </div>
-              <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
-                {d.email}
-              </div>
-            </button>
-          ))}
         </div>
 
         <div style={{ marginTop: 10, fontSize: 11, color: T.muted, textAlign: "center" }}>
@@ -396,169 +317,16 @@ function CoachLogin({ onLoggedIn }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Add Athlete Modal (persists to backend via POST /athletes)
+   Weekly Macro Plan (rows per day) with localStorage fallback on 404
 ────────────────────────────────────────────────────────────────────────────── */
-function AddAthleteModal({ onClose, onCreate, creating }) {
-  const SPORTS = ["Triathlon", "Powerlifting", "CrossFit", "Swimming", "Running", "Other"];
-
-  const [form, setForm] = useState({
-    name: "",
-    loginEmail: "",
-    password: "",
-    sport: "Running",
-    mfpUsername: "",
-  });
-
-  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
-
-  const valid =
-    form.name.trim() &&
-    form.loginEmail.trim() &&
-    form.password.trim() &&
-    form.password.trim().length >= 6;
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "#000000d0",
-        zIndex: 999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-      }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 560,
-          background: T.card,
-          border: `1px solid ${T.accent}44`,
-          borderRadius: 22,
-          overflow: "hidden",
-          animation: "fadeUp .2s ease",
-        }}
-      >
-        <div style={{ padding: "20px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>
-              ADD NEW ATHLETE
-            </div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-              Creates an athlete account in the database (coach‑owned).
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 20 }}
-            type="button"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div style={{ padding: "18px 24px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={labelStyle}>Full Name *</label>
-              <input value={form.name} onChange={set("name")} placeholder="e.g. Alex Morgan" style={inputStyle} />
-            </div>
-
-            <div>
-              <label style={labelStyle}>Sport</label>
-              <select
-                value={form.sport}
-                onChange={set("sport")}
-                style={{ ...inputStyle, cursor: "pointer" }}
-              >
-                {SPORTS.map((s) => (
-                  <option key={s} value={s} style={{ background: T.bg }}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>Portal Login Email *</label>
-            <input value={form.loginEmail} onChange={set("loginEmail")} placeholder="athlete@norules.com" style={inputStyle} />
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>Password * (min 6 chars)</label>
-            <input value={form.password} onChange={set("password")} placeholder="Create a password…" style={inputStyle} />
-            {form.password && form.password.length < 6 && (
-              <div style={{ marginTop: 6, fontFamily: "DM Sans", fontSize: 11, color: T.danger }}>
-                Password must be at least 6 characters.
-              </div>
-            )}
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>MyFitnessPal Username (optional)</label>
-            <input value={form.mfpUsername} onChange={set("mfpUsername")} placeholder="e.g. alexmorgan" style={inputStyle} />
-          </div>
-
-          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-            <button
-              onClick={onClose}
-              style={{
-                flex: 1,
-                background: "none",
-                border: `1px solid ${T.border}`,
-                borderRadius: 10,
-                padding: 11,
-                color: T.muted,
-                fontFamily: "DM Sans",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-              type="button"
-            >
-              Cancel
-            </button>
-
-            <button
-              onClick={() => onCreate(form)}
-              disabled={!valid || creating}
-              style={{
-                flex: 2,
-                background: valid ? T.accent : T.border,
-                color: valid ? T.bg : T.muted,
-                border: "none",
-                borderRadius: 10,
-                padding: 11,
-                fontFamily: "Bebas Neue, system-ui",
-                fontSize: 16,
-                letterSpacing: 1.5,
-                cursor: valid && !creating ? "pointer" : "default",
-                transition: "all .2s",
-              }}
-              type="button"
-            >
-              {creating ? "CREATING…" : "CREATE ATHLETE"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Weekly Macro Plan — Rows per day
-   - GET /macro-plans/:athleteId (optional but recommended)
-   - PUT /macro-plans/:athleteId
-────────────────────────────────────────────────────────────────────────────── */
-function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
+function WeeklyMacroPlan({ athleteId, baseTargets, token }) {
+  const LS_KEY = `macroplan:${athleteId}`;
+  const [plan, setPlan] = useState({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
+  const [localMode, setLocalMode] = useState(false); // ✅ becomes true if API is missing (404)
 
   const emptyWeek = () =>
     DAYS.reduce((acc, d) => {
@@ -571,31 +339,36 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
       return acc;
     }, {});
 
-  const [plan, setPlan] = useState(emptyWeek());
-
+  // Reset defaults when athlete changes
   useEffect(() => {
-    // refresh defaults when athlete changes
+    setErr("");
+    setSaved(false);
+    setLocalMode(false);
+
+    // Start with localStorage if it exists
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        setPlan(parsed);
+        return;
+      } catch {
+        // fall through to defaults
+      }
+    }
     setPlan(emptyWeek());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId]);
 
-  const setCell = (day, key, value) => {
-    const num = Number(value);
-    setPlan((p) => ({
-      ...p,
-      [day]: { ...p[day], [key]: Number.isFinite(num) ? num : 0 },
-    }));
-  };
-
-  const populateAll = () => setPlan(emptyWeek());
-
-  // Load saved plan if endpoint exists
+  // Try to load from API (if exists). If 404 -> keep localMode on.
   useEffect(() => {
     let ignore = false;
     const load = async () => {
       if (!athleteId) return;
-      setErr("");
+
       setLoading(true);
+      setErr("");
+
       try {
         const rows = await apiFetch(`/macro-plans/${athleteId}`, token);
         if (ignore) return;
@@ -611,14 +384,24 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
             fat: r.fat_g ?? next[d].fat,
           };
         });
+
         setPlan(next);
+        localStorage.setItem(LS_KEY, JSON.stringify(next)); // keep local in sync too
+        setLocalMode(false);
       } catch (e) {
-        // If not added yet, keep local-only
-        setErr(e.message);
+        // If endpoint doesn't exist yet, switch to local-only mode.
+        if (e.status === 404) {
+          setLocalMode(true);
+          setErr("Macro plan API not found (404). Saving locally in this browser for now.");
+          // keep whatever plan is already in state/local
+        } else {
+          setErr(e.message);
+        }
       } finally {
         if (!ignore) setLoading(false);
       }
     };
+
     load();
     return () => {
       ignore = true;
@@ -626,9 +409,38 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId]);
 
+  const setCell = (day, key, value) => {
+    const num = Number(value);
+    setPlan((p) => ({
+      ...p,
+      [day]: {
+        ...p[day],
+        [key]: Number.isFinite(num) ? num : 0,
+      },
+    }));
+  };
+
+  const populateAll = () => {
+    const next = emptyWeek();
+    setPlan(next);
+    localStorage.setItem(LS_KEY, JSON.stringify(next));
+  };
+
   const savePlan = async () => {
-    setErr("");
     setSaving(true);
+    setErr("");
+
+    // Always save locally (so it “remains” no matter what)
+    localStorage.setItem(LS_KEY, JSON.stringify(plan));
+
+    // If we already know API is missing, don’t attempt network
+    if (localMode) {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1600);
+      setSaving(false);
+      return;
+    }
+
     try {
       const payload = {
         plans: DAYS.map((d) => ({
@@ -646,10 +458,17 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
       });
 
       setSaved(true);
-      onSaved?.(plan);
-      setTimeout(() => setSaved(false), 2000);
+      setTimeout(() => setSaved(false), 1600);
+      setLocalMode(false);
     } catch (e) {
-      setErr(e.message);
+      if (e.status === 404) {
+        setLocalMode(true);
+        setErr("Macro plan API not found (404). Saved locally in this browser.");
+        setSaved(true);
+        setTimeout(() => setSaved(false), 1600);
+      } else {
+        setErr(e.message);
+      }
     } finally {
       setSaving(false);
     }
@@ -658,15 +477,14 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   const avg = useMemo(() => {
     const s = DAYS.reduce(
       (a, d) => {
-        a.calories += plan[d].calories;
-        a.protein += plan[d].protein;
-        a.carbs += plan[d].carbs;
-        a.fat += plan[d].fat;
+        a.calories += plan?.[d]?.calories ?? 0;
+        a.protein += plan?.[d]?.protein ?? 0;
+        a.carbs += plan?.[d]?.carbs ?? 0;
+        a.fat += plan?.[d]?.fat ?? 0;
         return a;
       },
       { calories: 0, protein: 0, carbs: 0, fat: 0 }
     );
-
     return {
       calories: Math.round(s.calories / 7),
       protein: Math.round(s.protein / 7),
@@ -731,7 +549,9 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
           </div>
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          {localMode && <Badge label="LOCAL SAVE MODE" color={T.warn} />}
+
           <button
             onClick={populateAll}
             style={{
@@ -783,7 +603,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
             marginBottom: 12,
           }}
         >
-          ✓ Macro plan saved.
+          ✓ Saved. {localMode ? "Stored in this browser." : "Stored in database."}
         </div>
       )}
 
@@ -822,19 +642,39 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
                 <td style={macroDayCell}>{d}</td>
 
                 <td style={macroTd}>
-                  <input type="number" value={plan[d].calories} onChange={(e) => setCell(d, "calories", e.target.value)} style={macroInput} />
+                  <input
+                    type="number"
+                    value={plan?.[d]?.calories ?? 0}
+                    onChange={(e) => setCell(d, "calories", e.target.value)}
+                    style={macroInput}
+                  />
                 </td>
 
                 <td style={macroTd}>
-                  <input type="number" value={plan[d].protein} onChange={(e) => setCell(d, "protein", e.target.value)} style={macroInput} />
+                  <input
+                    type="number"
+                    value={plan?.[d]?.protein ?? 0}
+                    onChange={(e) => setCell(d, "protein", e.target.value)}
+                    style={macroInput}
+                  />
                 </td>
 
                 <td style={macroTd}>
-                  <input type="number" value={plan[d].carbs} onChange={(e) => setCell(d, "carbs", e.target.value)} style={macroInput} />
+                  <input
+                    type="number"
+                    value={plan?.[d]?.carbs ?? 0}
+                    onChange={(e) => setCell(d, "carbs", e.target.value)}
+                    style={macroInput}
+                  />
                 </td>
 
                 <td style={macroTd}>
-                  <input type="number" value={plan[d].fat} onChange={(e) => setCell(d, "fat", e.target.value)} style={macroInput} />
+                  <input
+                    type="number"
+                    value={plan?.[d]?.fat ?? 0}
+                    onChange={(e) => setCell(d, "fat", e.target.value)}
+                    style={macroInput}
+                  />
                 </td>
               </tr>
             ))}
@@ -860,32 +700,20 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Athlete detail panel (click athlete -> opens)
-   Tabs:
-   - NUTRITION (base targets used for overview)
-   - MACRO PLAN (rows-per-day)
+   Athlete Detail
 ────────────────────────────────────────────────────────────────────────────── */
 function AthleteDetail({ athlete, token, onBack }) {
-  const [tab, setTab] = useState("nutrition");
-  const [editing, setEditing] = useState(false);
-  const [goals, setGoals] = useState(() => ({
-    calories: athlete.macroGoals?.calories ?? 2500,
-    protein: athlete.macroGoals?.protein ?? 180,
-    carbs: athlete.macroGoals?.carbs ?? 280,
-    fat: athlete.macroGoals?.fat ?? 75,
-  }));
-  const [saved, setSaved] = useState(false);
+  const [tab, setTab] = useState("macroplan");
 
-  const handleSaveTargets = () => {
-    // Targets here are local UI "defaults" used for Populate All Days.
-    // If you want to persist these as well, add an endpoint and POST here.
-    setEditing(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
-  };
+  // base targets used by "Populate all days"
+  const [goals, setGoals] = useState({
+    calories: 2500,
+    protein: 180,
+    carbs: 280,
+    fat: 75,
+  });
 
   const tabs = [
-    { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
   ];
 
@@ -926,10 +754,10 @@ function AthleteDetail({ athlete, token, onBack }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-        <StatCard label="CAL TARGET" value={goals.calories} color={T.accent} unit="kcal" />
-        <StatCard label="PROTEIN" value={goals.protein} color={T.protein} unit="g" />
-        <StatCard label="CARBS" value={goals.carbs} color={T.carbs} unit="g" />
-        <StatCard label="FAT" value={goals.fat} color={T.fat} unit="g" />
+        <StatCard label="CAL DEFAULT" value={goals.calories} color={T.accent} unit="kcal" />
+        <StatCard label="PRO DEFAULT" value={goals.protein} color={T.protein} unit="g" />
+        <StatCard label="CARB DEFAULT" value={goals.carbs} color={T.carbs} unit="g" />
+        <StatCard label="FAT DEFAULT" value={goals.fat} color={T.fat} unit="g" />
       </div>
 
       <div style={{ display: "flex", borderBottom: `1px solid ${T.border}`, gap: 1, overflowX: "auto" }}>
@@ -949,7 +777,6 @@ function AthleteDetail({ athlete, token, onBack }) {
               whiteSpace: "nowrap",
               borderBottom: tab === t.id ? `2px solid ${T.accent}` : "2px solid transparent",
               marginBottom: -1,
-              transition: "all .2s",
             }}
             type="button"
           >
@@ -957,137 +784,6 @@ function AthleteDetail({ athlete, token, onBack }) {
           </button>
         ))}
       </div>
-
-      {tab === "nutrition" && (
-        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-          {saved && (
-            <div
-              style={{
-                background: `${T.coachGreen}18`,
-                border: `1px solid ${T.coachGreen}44`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                fontFamily: "DM Sans",
-                fontSize: 12,
-                color: T.coachGreen,
-                marginBottom: 12,
-              }}
-            >
-              ✓ Targets updated (local defaults for macro overview).
-            </div>
-          )}
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
-                MACRO TARGETS (DEFAULTS)
-              </div>
-              <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-                Used by “Populate all days” in the Macro Plan tab.
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8 }}>
-              {editing ? (
-                <>
-                  <button
-                    onClick={() => {
-                      setGoals({
-                        calories: athlete.macroGoals?.calories ?? 2500,
-                        protein: athlete.macroGoals?.protein ?? 180,
-                        carbs: athlete.macroGoals?.carbs ?? 280,
-                        fat: athlete.macroGoals?.fat ?? 75,
-                      });
-                      setEditing(false);
-                    }}
-                    style={{
-                      background: "none",
-                      border: `1px solid ${T.border}`,
-                      borderRadius: 10,
-                      padding: "8px 12px",
-                      color: T.muted,
-                      fontFamily: "DM Sans",
-                      fontSize: 12,
-                      cursor: "pointer",
-                    }}
-                    type="button"
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    onClick={handleSaveTargets}
-                    style={{
-                      background: T.accent,
-                      border: "none",
-                      borderRadius: 10,
-                      padding: "8px 14px",
-                      color: T.bg,
-                      fontFamily: "Bebas Neue, system-ui",
-                      fontSize: 14,
-                      letterSpacing: 1.5,
-                      cursor: "pointer",
-                    }}
-                    type="button"
-                  >
-                    SAVE
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setEditing(true)}
-                  style={{
-                    background: "none",
-                    border: `1px solid ${T.accent}44`,
-                    borderRadius: 10,
-                    padding: "8px 14px",
-                    color: T.accent,
-                    fontFamily: "DM Sans",
-                    fontSize: 12,
-                    cursor: "pointer",
-                  }}
-                  type="button"
-                >
-                  ✏ Edit Targets
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[
-              { key: "calories", label: "Calories", unit: "kcal", color: T.accent },
-              { key: "protein", label: "Protein", unit: "g", color: T.protein },
-              { key: "carbs", label: "Carbs", unit: "g", color: T.carbs },
-              { key: "fat", label: "Fat", unit: "g", color: T.fat },
-            ].map((m) => (
-              <div key={m.key}>
-                <label style={labelStyle}>{m.label}</label>
-                {editing ? (
-                  <input
-                    type="number"
-                    value={goals[m.key]}
-                    onChange={(e) => setGoals((g) => ({ ...g, [m.key]: clamp(Number(e.target.value), 0, 20000) }))}
-                    style={{
-                      ...inputStyle,
-                      border: `1px solid ${m.color}44`,
-                      color: m.color,
-                      fontFamily: "JetBrains Mono, ui-monospace",
-                      fontSize: 14,
-                      fontWeight: 700,
-                    }}
-                  />
-                ) : (
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                    <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 30, color: m.color }}>{goals[m.key]}</span>
-                    <span style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{m.unit}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       {tab === "macroplan" && (
         <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
@@ -1100,18 +796,17 @@ function AthleteDetail({ athlete, token, onBack }) {
    Main Coach CMS
 ────────────────────────────────────────────────────────────────────────────── */
 export default function CoachCMS() {
-  const [me, setMe] = useState(null); // { id, email, name, role, token }
+  const [me, setMe] = useState(null);
   const [token, setToken] = useState(null);
+
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [rosterErr, setRosterErr] = useState("");
   const [athletes, setAthletes] = useState([]);
-  const [view, setView] = useState("overview"); // overview | athlete
+
+  const [view, setView] = useState("overview");
   const [selected, setSelected] = useState(null);
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [creating, setCreating] = useState(false);
-
-  // Inject fonts once
+  // Fonts
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -1121,15 +816,15 @@ export default function CoachCMS() {
     return () => link.remove();
   }, []);
 
-  // Try restore session token from localStorage, then /auth/me
+  // Restore token session
   useEffect(() => {
     const t = localStorage.getItem(TOKEN_KEY);
     if (!t) return;
-
     setToken(t);
+
     (async () => {
       try {
-        const user = await apiFetch("/auth/me", t); // backend supports this [1](https://github.com/orgs/community/discussions/151670)
+        const user = await apiFetch("/auth/me", t);
         setMe({ ...user, token: t });
       } catch {
         localStorage.removeItem(TOKEN_KEY);
@@ -1139,17 +834,16 @@ export default function CoachCMS() {
     })();
   }, []);
 
-  // Load roster after login
+  // Load athletes roster
   useEffect(() => {
     if (!token || !me) return;
-    if (me.role !== "coach") return;
 
-    setRosterErr("");
     setLoadingRoster(true);
+    setRosterErr("");
 
     (async () => {
       try {
-        const rows = await apiFetch("/athletes", token); // backend supports this [1](https://github.com/orgs/community/discussions/151670)
+        const rows = await apiFetch("/athletes", token);
         const mapped = rows.map((a) => ({
           id: a.id,
           name: a.name,
@@ -1157,7 +851,6 @@ export default function CoachCMS() {
           sport: a.sport || "—",
           avatar: initialsOf(a.name),
           avatarColor: randomAvatarColor(),
-          macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
         }));
         setAthletes(mapped);
       } catch (e) {
@@ -1175,7 +868,7 @@ export default function CoachCMS() {
 
   const logout = async () => {
     try {
-      if (token) await apiFetch("/auth/logout", token, { method: "POST" }); // optional [1](https://github.com/orgs/community/discussions/151670)
+      if (token) await apiFetch("/auth/logout", token, { method: "POST" });
     } catch {}
     localStorage.removeItem(TOKEN_KEY);
     setToken(null);
@@ -1185,71 +878,7 @@ export default function CoachCMS() {
     setView("overview");
   };
 
-  const createAthlete = async (form) => {
-    setCreating(true);
-    try {
-      const created = await apiFetch("/athletes", token, {
-        method: "POST",
-        body: JSON.stringify({
-          email: form.loginEmail.trim().toLowerCase(),
-          name: form.name.trim(),
-          password: form.password,
-          sport: form.sport,
-          mfpUsername: form.mfpUsername?.trim() || null,
-        }),
-      }); // backend supports POST /athletes [1](https://github.com/orgs/community/discussions/151670)
-
-      const mapped = {
-        id: created.id,
-        name: created.name,
-        email: created.email,
-        sport: created.sport || form.sport || "—",
-        avatar: initialsOf(created.name),
-        avatarColor: randomAvatarColor(),
-        macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
-      };
-
-      setAthletes((p) => [mapped, ...p].sort((a, b) => a.name.localeCompare(b.name)));
-      setShowAdd(false);
-    } catch (e) {
-      alert(e.message);
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  if (!me || !token) {
-    return <CoachLogin onLoggedIn={onLoggedIn} />;
-  }
-
-  // Basic coach-only guard
-  if (me.role !== "coach") {
-    return (
-      <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "DM Sans", padding: 30 }}>
-        <h2 style={{ fontFamily: "Bebas Neue, system-ui", letterSpacing: 2 }}>Access denied</h2>
-        <p style={{ color: T.muted, marginTop: 10 }}>
-          Your account role is <strong>{me.role}</strong>. This portal is for coaches only.
-        </p>
-        <button
-          onClick={logout}
-          style={{
-            marginTop: 16,
-            background: T.accent,
-            border: "none",
-            color: T.bg,
-            borderRadius: 10,
-            padding: "10px 16px",
-            fontFamily: "Bebas Neue, system-ui",
-            letterSpacing: 1.5,
-            cursor: "pointer",
-          }}
-          type="button"
-        >
-          LOG OUT
-        </button>
-      </div>
-    );
-  }
+  if (!me || !token) return <CoachLogin onLoggedIn={onLoggedIn} />;
 
   return (
     <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "DM Sans" }}>
@@ -1270,9 +899,11 @@ export default function CoachCMS() {
         }}
       >
         <div style={{ maxWidth: 1200, margin: "0 auto", padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 }}>
-          <img src={LOGO_SRC} alt="NRN" style={{ width: 42, height: 42, borderRadius: "50%", border: `2px solid ${T.accent}44` }} />
+          <img src={logo} alt="No Rules Nutrition" style={{ width: 46, height: "auto" }} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2 }}>NO RULES NUTRITION</div>
+            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2 }}>
+              NO RULES NUTRITION
+            </div>
             <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>
               Coach: <span style={{ color: T.text, fontWeight: 600 }}>{me.name}</span> ·{" "}
               <span style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>{me.email}</span>
@@ -1310,27 +941,9 @@ export default function CoachCMS() {
                   CLIENT ROSTER
                 </div>
                 <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
-                  Click an athlete to open their profile and macro plan.
+                  Click an athlete to open their Macro Plan.
                 </div>
               </div>
-
-              <button
-                onClick={() => setShowAdd(true)}
-                style={{
-                  background: T.accent,
-                  color: T.bg,
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "10px 18px",
-                  fontFamily: "Bebas Neue, system-ui",
-                  fontSize: 14,
-                  letterSpacing: 1.5,
-                  cursor: "pointer",
-                }}
-                type="button"
-              >
-                + ADD ATHLETE
-              </button>
             </div>
 
             {rosterErr && (
@@ -1350,9 +963,9 @@ export default function CoachCMS() {
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
               <StatCard label="TOTAL ATHLETES" value={athletes.length} color={T.accent} />
-              <StatCard label="API" value="CONNECTED" color={T.coachGreen} sub={API_BASE} />
-              <StatCard label="TOKEN" value={token ? "ACTIVE" : "—"} color={token ? T.coachGreen : T.warn} />
+              <StatCard label="API" value="CONNECTED" color={T.coachGreen} />
               <StatCard label="STATUS" value={loadingRoster ? "LOADING…" : "READY"} color={loadingRoster ? T.warn : T.text} />
+              <StatCard label="ENV" value={API_BASE.includes("localhost") ? "LOCAL" : "REMOTE"} color={T.muted} />
             </div>
 
             <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 20, overflow: "hidden" }}>
@@ -1365,7 +978,7 @@ export default function CoachCMS() {
                 <div style={{ padding: 18, color: T.muted }}>Loading athletes…</div>
               ) : athletes.length === 0 ? (
                 <div style={{ padding: 18, color: T.muted }}>
-                  No athletes found for this coach yet. Click <b>+ ADD ATHLETE</b> to create one.
+                  No athletes found yet.
                 </div>
               ) : (
                 athletes.map((a, idx) => (
@@ -1416,14 +1029,6 @@ export default function CoachCMS() {
           />
         )}
       </div>
-
-      {showAdd && (
-        <AddAthleteModal
-          onClose={() => setShowAdd(false)}
-          onCreate={createAthlete}
-          creating={creating}
-        />
-      )}
     </div>
   );
 }

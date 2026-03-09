@@ -13,45 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || "https://no-rules-api-production.up.railway.app";
-const TOKEN_KEY = "nrn_token";
-
-
-function Sparkline({ values, width = 520, height = 120, stroke = "#36d399", fill = "transparent" }) {
-  const pad = 10;
-  const w = width - pad * 2;
-  const h = height - pad * 2;
-  if (!values || values.length < 2) {
-    return (
-      <svg width={width} height={height} style={{ display: "block" }}>
-        <rect x={0} y={0} width={width} height={height} rx={12} fill={`${T.bg}00`} stroke={`${T.border}`} />
-        <text x={width / 2} y={height / 2} textAnchor="middle" fill={T.muted} fontSize="12" fontFamily="DM Sans">Not enough data</text>
-      </svg>
-    );
-  }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = Math.max(1e-6, max - min);
-  const pts = values
-    .map((v, i) => {
-      const x = pad + (i / (values.length - 1)) * w;
-      const y = pad + (1 - (v - min) / range) * h;
-      return `${x.toFixed(2)},${y.toFixed(2)}`;
-    })
-    .join(" ");
-
-  return (
-    <svg width={width} height={height} style={{ display: "block" }}>
-      <rect x={0} y={0} width={width} height={height} rx={12} fill={`${T.bg}00`} stroke={`${T.border}`} />
-      <polyline points={pts} fill={fill} stroke={stroke} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function MoodSparkline({ moods, width = 520, height = 120 }) {
-  // moods are 1..5, show as line (higher = better)
-  const vals = (moods || []).map((m) => Number(m.mood_id || m.id || 0)).filter((n) => Number.isFinite(n) && n > 0);
-  return <Sparkline values={vals} width={width} height={height} stroke={T.accent} />;
-}
+const TOKEN_KEY = "nrn_token" = "nrn_token";
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Theme + constants
@@ -110,12 +72,7 @@ async function apiFetch(path, token, opts = {}) {
 
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || `Request failed (${res.status})`);
-    err.status = res.status;
-    err.data = data;
-    throw err;
-  }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 
@@ -221,6 +178,13 @@ function CoachLogin({ onLoggedIn }) {
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
+
+  // Demo accounts for quick fill (UI-only convenience)
+  const DEMOS = [
+    { email: "gerard@norules.com", password: "gerard1", name: "Gerard Queen", role: "Coach" },
+    { email: "luke@norules.com", password: "luke1", name: "Luke Bastick", role: "Coach" },
+    { email: "esme@norules.com", password: "esme1", name: "Esme", role: "Coach" },
+  ];
 
   const handleLogin = async () => {
     setErr("");
@@ -388,6 +352,39 @@ function CoachLogin({ onLoggedIn }) {
         </div>
 
         <div style={{ marginTop: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ fontSize: 11, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
+            Demo Accounts — click to fill
+          </div>
+
+          {DEMOS.map((d) => (
+            <button
+              key={d.email}
+              onClick={() => {
+                setEmail(d.email);
+                setPass(d.password);
+                setErr("");
+              }}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                background: T.card,
+                border: `1px solid ${T.border}`,
+                borderRadius: 10,
+                padding: "10px 14px",
+                marginBottom: 8,
+                cursor: "pointer",
+              }}
+              type="button"
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{d.name}</span>
+                <Badge label={d.role} color={T.coachGreen} />
+              </div>
+              <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
+                {d.email}
+              </div>
+            </button>
+          ))}
         </div>
 
         <div style={{ marginTop: 10, fontSize: 11, color: T.muted, textAlign: "center" }}>
@@ -562,6 +559,39 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
+
+  // Load current macro targets from saved macro plan (average of days)
+  useEffect(() => {
+    let ignore = false;
+    const loadMacroGoalsFromPlan = async () => {
+      try {
+        const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
+        if (ignore) return;
+        const vals = (rows || []).filter(Boolean);
+        if (!vals.length) return;
+        const sum = vals.reduce((a, r) => ({
+          calories: a.calories + Number(r.calories || 0),
+          protein: a.protein + Number(r.protein_g || 0),
+          carbs: a.carbs + Number(r.carbs_g || 0),
+          fat: a.fat + Number(r.fat_g || 0),
+        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+        const n = Math.max(1, vals.length);
+        const avg = {
+          calories: Math.round(sum.calories / n),
+          protein: Math.round(sum.protein / n),
+          carbs: Math.round(sum.carbs / n),
+          fat: Math.round(sum.fat / n),
+        };
+        setInitialGoals(avg);
+        setGoals(avg);
+      } catch {
+        // ignore
+      }
+    };
+    loadMacroGoalsFromPlan();
+    return () => { ignore = true; };
+  }, [athlete.id, token]);
+
 
   const emptyWeek = () =>
     DAYS.reduce((acc, d) => {
@@ -868,154 +898,46 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
    - NUTRITION (base targets used for overview)
    - MACRO PLAN (rows-per-day)
 ────────────────────────────────────────────────────────────────────────────── */
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Client Data Panels (coach view)
-────────────────────────────────────────────────────────────────────────────── */
-
-function AthleteWeightsPanel({ athleteId, token }) {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const [weights, setWeights] = useState([]);
-
-  const load = async () => {
-    if (!athleteId) return;
-    setLoading(true);
-    setErr("");
-    try {
-      const w = await apiFetch(`/weights/${athleteId}`, token);
-      setWeights(Array.isArray(w) ? w : []);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const series = [...weights].reverse().map((w) => Number(w.kg)).filter((n) => Number.isFinite(n));
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEIGHT TREND</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Latest: {weights?.[0]?.kg ?? "—"} kg</div>
-        </div>
-        <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
-      </div>
-
-      {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
-
-      <Sparkline values={series} width={520} height={120} stroke={T.coachGreen} />
-
-      <div style={{ maxHeight: 240, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12, marginTop: 12 }}>
-        {loading ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
-        ) : weights.length === 0 ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>No weights yet.</div>
-        ) : (
-          weights.map((w) => (
-            <div key={w.date} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${T.border}22`, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12 }}>
-              <span style={{ color: T.muted }}>{w.date}</span>
-              <span style={{ color: T.text }}>{w.kg} kg</span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AthleteMoodPanel({ athleteId, token }) {
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState("");
-  const [moods, setMoods] = useState([]);
-
-  const load = async () => {
-    if (!athleteId) return;
-    setLoading(true);
-    setErr("");
-    try {
-      const m = await apiFetch(`/moods/${athleteId}`, token);
-      setMoods(Array.isArray(m) ? m : []);
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const series = [...moods].reverse().map((m) => Number(m.mood_id)).filter((n) => Number.isFinite(n));
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD TREND</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Latest: {moods?.[0]?.label ?? "—"}</div>
-        </div>
-        <button onClick={load} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">Refresh</button>
-      </div>
-
-      {err && <div style={{ marginBottom: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 14px", fontSize: 12, color: T.warn }}>{err}</div>}
-
-      <Sparkline values={series} width={520} height={120} stroke={T.accent} />
-
-      <div style={{ maxHeight: 240, overflow: "auto", borderTop: `1px solid ${T.border}`, paddingTop: 12, marginTop: 12 }}>
-        {loading ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
-        ) : moods.length === 0 ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>No moods yet.</div>
-        ) : (
-          moods.map((m) => (
-            <div key={m.date} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}22` }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12 }}>{m.date}</span>
-                <span style={{ color: m.color || T.text, fontFamily: "DM Sans", fontSize: 12 }}>{m.emoji} {m.label} ({m.mood_id})</span>
-              </div>
-              {m.note ? <div style={{ marginTop: 6, color: T.muted, fontSize: 12 }}>{m.note}</div> : null}
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
 function AthleteDetail({ athlete, token, onBack }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
-  const [goals, setGoals] = useState(() => ({
+  const [initialGoals, setInitialGoals] = useState(() => ({
     calories: athlete.macroGoals?.calories ?? 2500,
     protein: athlete.macroGoals?.protein ?? 180,
     carbs: athlete.macroGoals?.carbs ?? 280,
     fat: athlete.macroGoals?.fat ?? 75,
   }));
+  const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
 
-  const handleSaveTargets = () => {
-    // Targets here are local UI "defaults" used for Populate All Days.
-    // If you want to persist these as well, add an endpoint and POST here.
-    setEditing(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+  const handleSaveTargets = async () => {
+    // Persist these targets by applying them to ALL days in the macro plan and saving to backend
+    try {
+      const payload = {
+        plans: DAYS.map((d) => ({
+          dayOfWeek: d,
+          calories: goals.calories,
+          protein_g: goals.protein,
+          carbs_g: goals.carbs,
+          fat_g: goals.fat,
+        })),
+      };
+      await apiFetch(`/macro-plans/${athlete.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      setInitialGoals(goals);
+      setEditing(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1800);
+    } catch (e) {
+      alert(e.message || "Could not save targets");
+    }
   };
 
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
-    { id: "weights", label: "WEIGHTS" },
-    { id: "moods", label: "MOOD" },
   ];
 
   return (
@@ -1219,11 +1141,24 @@ function AthleteDetail({ athlete, token, onBack }) {
       )}
 
       {tab === "macroplan" && (
-        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
+        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
+        // keep Nutrition targets in sync with saved macro plan
+        const avg = DAYS.reduce((a, d) => ({
+          calories: a.calories + Number(p[d].calories || 0),
+          protein: a.protein + Number(p[d].protein || 0),
+          carbs: a.carbs + Number(p[d].carbs || 0),
+          fat: a.fat + Number(p[d].fat || 0),
+        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+        const next = {
+          calories: Math.round(avg.calories / 7),
+          protein: Math.round(avg.protein / 7),
+          carbs: Math.round(avg.carbs / 7),
+          fat: Math.round(avg.fat / 7),
+        };
+        setInitialGoals(next);
+        setGoals(next);
+      }} />
       )}
-
-      {tab === "weights" && (<AthleteWeightsPanel athleteId={athlete.id} token={token} />)}
-      {tab === "moods" && (<AthleteMoodPanel athleteId={athlete.id} token={token} />)}
     </div>
   );
 }

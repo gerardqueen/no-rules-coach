@@ -184,13 +184,6 @@ function CoachLogin({ onLoggedIn }) {
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
 
-  // Demo accounts for quick fill (UI-only convenience)
-  const DEMOS = [
-    { email: "gerard@norules.com", password: "gerard1", name: "Gerard Queen", role: "Coach" },
-    { email: "luke@norules.com", password: "luke1", name: "Luke Bastick", role: "Coach" },
-    { email: "esme@norules.com", password: "esme1", name: "Esme", role: "Coach" },
-  ];
-
   const handleLogin = async () => {
     setErr("");
     if (!email.trim() || !pass) {
@@ -357,39 +350,6 @@ function CoachLogin({ onLoggedIn }) {
         </div>
 
         <div style={{ marginTop: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-          <div style={{ fontSize: 11, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-            Demo Accounts — click to fill
-          </div>
-
-          {DEMOS.map((d) => (
-            <button
-              key={d.email}
-              onClick={() => {
-                setEmail(d.email);
-                setPass(d.password);
-                setErr("");
-              }}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                marginBottom: 8,
-                cursor: "pointer",
-              }}
-              type="button"
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{d.name}</span>
-                <Badge label={d.role} color={T.coachGreen} />
-              </div>
-              <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
-                {d.email}
-              </div>
-            </button>
-          ))}
         </div>
 
         <div style={{ marginTop: 10, fontSize: 11, color: T.muted, textAlign: "center" }}>
@@ -872,11 +832,10 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
 ────────────────────────────────────────────────────────────────────────────── */
 
 /* ─────────────────────────────────────────────────────────────────────────────
- Client Data Panels (coach can view what client entered)
- Backend endpoints expected:
-  - GET/PUT /profiles/:athleteId
-  - GET/POST /weights/:athleteId
-  - GET/PUT /meal-plans/:athleteId
+   Client Data Panels (coach view)
+   - /profiles/:athleteId
+   - /weights/:athleteId
+   - /meal-plans/:athleteId
 ────────────────────────────────────────────────────────────────────────────── */
 
 function AthleteProfilePanel({ athleteId, token }) {
@@ -922,7 +881,7 @@ function AthleteProfilePanel({ athleteId, token }) {
     try {
       await apiFetch(`/profiles/${athleteId}`, token, { method: "PUT", body: JSON.stringify(profile) });
       setOk(true);
-      setTimeout(() => setOk(false), 2000);
+      setTimeout(() => setOk(false), 1800);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -935,7 +894,7 @@ function AthleteProfilePanel({ athleteId, token }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
           <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CLIENT PROFILE</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Pulled from backend (same as client app).</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>Live data from the client app.</div>
         </div>
         <button onClick={save} disabled={saving} style={{ background: saving ? T.border : T.accent, border: "none", borderRadius: 10, padding: "8px 16px", color: saving ? T.muted : T.bg, fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: saving ? "default" : "pointer" }} type="button">
           {saving ? "SAVING…" : "SAVE"}
@@ -1358,6 +1317,10 @@ function AthleteDetail({ athlete, token, onBack }) {
       {tab === "macroplan" && (
         <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
       )}
+
+      {tab === "profile" && (<AthleteProfilePanel athleteId={athlete.id} token={token} />)}
+      {tab === "weights" && (<AthleteWeightsPanel athleteId={athlete.id} token={token} />)}
+      {tab === "meals" && (<AthleteMealPlanPanel athleteId={athlete.id} token={token} />)}
     </div>
   );
 }
@@ -1396,10 +1359,7 @@ export default function CoachCMS() {
     (async () => {
       try {
         const user = await apiFetch("/auth/me", t); // backend supports this [1](https://github.com/orgs/community/discussions/151670)
-        setMe({ ...user, token: t })
-      {tab === "profile" && (<AthleteProfilePanel athleteId={athlete.id} token={token} />)}
-      {tab === "weights" && (<AthleteWeightsPanel athleteId={athlete.id} token={token} />)}
-      {tab === "meals" && (<AthleteMealPlanPanel athleteId={athlete.id} token={token} />)};
+        setMe({ ...user, token: t });
       } catch {
         localStorage.removeItem(TOKEN_KEY);
         setToken(null);

@@ -13,7 +13,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
  */
 
 const API_BASE = import.meta.env.VITE_API_URL || "https://no-rules-api-production.up.railway.app";
-const TOKEN_KEY = "nrn_token" = "nrn_token";
+const TOKEN_KEY = "nrn_token";
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Theme + constants
@@ -563,7 +563,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   // Load current macro targets from saved macro plan (average of days)
   useEffect(() => {
     let ignore = false;
-    const loadMacroGoalsFromPlan = async () => {
+    (async () => {
       try {
         const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
         if (ignore) return;
@@ -587,8 +587,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
       } catch {
         // ignore
       }
-    };
-    loadMacroGoalsFromPlan();
+    })();
     return () => { ignore = true; };
   }, [athlete.id, token]);
 
@@ -1142,18 +1141,17 @@ function AthleteDetail({ athlete, token, onBack }) {
 
       {tab === "macroplan" && (
         <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
-        // keep Nutrition targets in sync with saved macro plan
-        const avg = DAYS.reduce((a, d) => ({
+        const tot = DAYS.reduce((a, d) => ({
           calories: a.calories + Number(p[d].calories || 0),
           protein: a.protein + Number(p[d].protein || 0),
           carbs: a.carbs + Number(p[d].carbs || 0),
           fat: a.fat + Number(p[d].fat || 0),
         }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
         const next = {
-          calories: Math.round(avg.calories / 7),
-          protein: Math.round(avg.protein / 7),
-          carbs: Math.round(avg.carbs / 7),
-          fat: Math.round(avg.fat / 7),
+          calories: Math.round(tot.calories / 7),
+          protein: Math.round(tot.protein / 7),
+          carbs: Math.round(tot.carbs / 7),
+          fat: Math.round(tot.fat / 7),
         };
         setInitialGoals(next);
         setGoals(next);

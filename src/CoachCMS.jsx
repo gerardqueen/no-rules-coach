@@ -560,6 +560,38 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
 
+  // Load current macro targets from saved macro plan (average of days)
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      try {
+        const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
+        if (ignore) return;
+        const vals = (rows || []).filter(Boolean);
+        if (!vals.length) return;
+        const sum = vals.reduce((a, r) => ({
+          calories: a.calories + Number(r.calories || 0),
+          protein: a.protein + Number(r.protein_g || 0),
+          carbs: a.carbs + Number(r.carbs_g || 0),
+          fat: a.fat + Number(r.fat_g || 0),
+        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+        const n = Math.max(1, vals.length);
+        const avg = {
+          calories: Math.round(sum.calories / n),
+          protein: Math.round(sum.protein / n),
+          carbs: Math.round(sum.carbs / n),
+          fat: Math.round(sum.fat / n),
+        };
+        setInitialGoals(avg);
+        setGoals(avg);
+      } catch {
+        // ignore
+      }
+    })();
+    return () => { ignore = true; };
+  }, [athlete.id, token]);
+
+
   const emptyWeek = () =>
     DAYS.reduce((acc, d) => {
       acc[d] = {
@@ -868,20 +900,38 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
 function AthleteDetail({ athlete, token, onBack }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
-  const [goals, setGoals] = useState(() => ({
+  const [initialGoals, setInitialGoals] = useState(() => ({
     calories: athlete.macroGoals?.calories ?? 2500,
     protein: athlete.macroGoals?.protein ?? 180,
     carbs: athlete.macroGoals?.carbs ?? 280,
     fat: athlete.macroGoals?.fat ?? 75,
   }));
+  const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
 
-  const handleSaveTargets = () => {
-    // Targets here are local UI "defaults" used for Populate All Days.
-    // If you want to persist these as well, add an endpoint and POST here.
-    setEditing(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1800);
+  const handleSaveTargets = async () => {
+    // Persist these targets by applying them to ALL days in the macro plan and saving to backend
+    try {
+      const payload = {
+        plans: DAYS.map((d) => ({
+          dayOfWeek: d,
+          calories: goals.calories,
+          protein_g: goals.protein,
+          carbs_g: goals.carbs,
+          fat_g: goals.fat,
+        })),
+      };
+      await apiFetch(`/macro-plans/${athlete.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      setInitialGoals(goals);
+      setEditing(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1800);
+    } catch (e) {
+      alert(e.message || "Could not save targets");
+    }
   };
 
   const tabs = [
@@ -1092,7 +1142,22 @@ function AthleteDetail({ athlete, token, onBack }) {
       )}
 
       {tab === "macroplan" && (
-        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
+        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
+        const tot = DAYS.reduce((a, d) => ({
+          calories: a.calories + Number(p[d].calories || 0),
+          protein: a.protein + Number(p[d].protein || 0),
+          carbs: a.carbs + Number(p[d].carbs || 0),
+          fat: a.fat + Number(p[d].fat || 0),
+        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
+        const next = {
+          calories: Math.round(tot.calories / 7),
+          protein: Math.round(tot.protein / 7),
+          carbs: Math.round(tot.carbs / 7),
+          fat: Math.round(tot.fat / 7),
+        };
+        setInitialGoals(next);
+        setGoals(next);
+      }} />
       )}
     </div>
   );
@@ -1104,7 +1169,7 @@ function AthleteDetail({ athlete, token, onBack }) {
 
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Calendar helpers (coach)
+   Calendar helpers + Targets + Check-ins (added)
 ───────────────────────────────────────────────────────────────────────────── */
 function isoDate(d) {
   return new Date(d).toISOString().slice(0, 10);
@@ -1112,7 +1177,7 @@ function isoDate(d) {
 
 function weekStartISO(offsetWeeks = 0) {
   const now = new Date();
-  const day = now.getDay(); // 0=Sun
+  const day = now.getDay();
   const diffToMon = (day === 0 ? -6 : 1) - day;
   const monday = new Date(now);
   monday.setDate(now.getDate() + diffToMon + offsetWeeks * 7);
@@ -1178,10 +1243,6 @@ function cellInput() {
   };
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   TargetsCalendar — calendar-based macro targets (coach -> client)
-   Uses backend: GET/PUT /macro-targets/:athleteId
-───────────────────────────────────────────────────────────────────────────── */
 function TargetsCalendar({ athleteId, token, defaults }) {
   const [weekOffset, setWeekOffset] = useState(0);
   const [rows, setRows] = useState({});
@@ -1265,33 +1326,19 @@ function TargetsCalendar({ athleteId, token, defaults }) {
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
-            CALENDAR TARGETS
-          </div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
-            Set per-date macro targets (history kept).
-          </div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CALENDAR TARGETS</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Set per-date macro targets (history kept).</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <button onClick={() => setWeekOffset((w) => w - 1)} style={miniBtnStyle()} type="button">◀</button>
           <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
           <button onClick={() => setWeekOffset((w) => Math.min(0, w + 1))} style={miniBtnStyle()} type="button">▶</button>
-          <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(), borderColor: `${T.accent}55`, color: T.accent }} type="button">
-            {saving ? "SAVING…" : "SAVE"}
-          </button>
+          <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(), borderColor: `${T.accent}55`, color: T.accent }} type="button">{saving ? "SAVING…" : "SAVE"}</button>
         </div>
       </div>
 
-      {err ? (
-        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>
-          {err}
-        </div>
-      ) : null}
-      {saved ? (
-        <div style={{ marginTop: 12, background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 12, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 12 }}>
-          ✓ Saved
-        </div>
-      ) : null}
+      {err ? (<div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>) : null}
+      {saved ? (<div style={{ marginTop: 12, background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 12, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 12 }}>✓ Saved</div>) : null}
 
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
@@ -1327,9 +1374,6 @@ function TargetsCalendar({ athleteId, token, defaults }) {
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   CheckinsPanel — weight, mood, macros consumed (daily totals)
-───────────────────────────────────────────────────────────────────────────── */
 function CheckinsPanel({ athleteId, token }) {
   const [rangeDays, setRangeDays] = useState(30);
   const [weights, setWeights] = useState([]);
@@ -1378,37 +1422,18 @@ function CheckinsPanel({ athleteId, token }) {
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
-            CHECK-INS & CONSUMPTION
-          </div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
-            Weight, mood, and macros consumed — by date.
-          </div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CHECK-INS & CONSUMPTION</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Weight, mood, and macros consumed — by date.</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {[7, 30, 90, 180].map((d) => (
-            <button
-              key={d}
-              onClick={() => setRangeDays(d)}
-              style={{
-                ...miniBtnStyle(),
-                borderColor: rangeDays === d ? `${T.accent}66` : T.border,
-                color: rangeDays === d ? T.accent : T.muted,
-              }}
-              type="button"
-            >
-              {d}d
-            </button>
+            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
           ))}
           <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
         </div>
       </div>
 
-      {err ? (
-        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>
-          {err}
-        </div>
-      ) : null}
+      {err ? (<div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>) : null}
 
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>

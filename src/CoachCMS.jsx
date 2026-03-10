@@ -1,23 +1,19 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-/**
- * COACHCMS.jsx — Full replacement file
- * - Real backend login (/auth/login)
- * - Load athletes (/athletes)
- * - Add athlete (/athletes)
- * - Macro plan rows-per-day (GET/PUT /macro-plans/:athleteId)
- *
- * API base:
- *  - Set VITE_API_URL in your frontend .env (recommended)
- *  - Fallback is http://localhost:3001
- */
+// NO RULES NUTRITION — Coach CMS (single-file)
+// Features:
+// - Real login (JWT)
+// - Create athlete accounts
+// - Delete athletes (with confirmation)
+// - Weekly macro plan (MON..SUN) save to backend
+// - Calendar macro targets (per-date) save to backend
+// - Weight/Mood/Consumed graphs (date-based)
+// - Coach check-in calendar (links/notes by date)
+// - Coach dashboard overview: weight % change, avg mood, adherence
 
 const API_BASE = import.meta.env.VITE_API_URL || "https://no-rules-api-production.up.railway.app";
 const TOKEN_KEY = "nrn_token";
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Theme + constants
-────────────────────────────────────────────────────────────────────────────── */
 const T = {
   bg: "#0a0a0a",
   surface: "#111111",
@@ -37,953 +33,826 @@ const T = {
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
-/**
- * Logo: embedded SVG so it never depends on a removed file.
- * (If you want your original logo image, you can swap this string with your own base64.)
- */
-const LOGO_SRC =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(`
-<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
-  <defs>
-    <radialGradient id="g" cx="50%" cy="45%" r="70%">
-      <stop offset="0%" stop-color="#FF9A52" stop-opacity="0.95"/>
-      <stop offset="70%" stop-color="#FF9A52" stop-opacity="0.35"/>
-      <stop offset="100%" stop-color="#0a0a0a" stop-opacity="1"/>
-    </radialGradient>
-  </defs>
-  <rect width="240" height="240" fill="#0a0a0a"/>
-  <circle cx="120" cy="120" r="102" fill="url(#g)" stroke="#FF9A52" stroke-opacity="0.35" stroke-width="6"/>
-  <circle cx="120" cy="120" r="84" fill="#111111" stroke="#FF9A52" stroke-opacity="0.25" stroke-width="2"/>
-  <text x="50%" y="48%" fill="#FF9A52" font-family="Arial Black, Impact, sans-serif" font-size="56" text-anchor="middle" dominant-baseline="middle">NRN</text>
-  <text x="50%" y="63%" fill="#9aa0a6" font-family="Arial, sans-serif" font-size="16" text-anchor="middle" dominant-baseline="middle" letter-spacing="2">COACH PORTAL</text>
-</svg>
-`);
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Helpers
-────────────────────────────────────────────────────────────────────────────── */
 async function apiFetch(path, token, opts = {}) {
-  const headers = {
-    "Content-Type": "application/json",
-    ...(opts.headers || {}),
-  };
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
   if (token) headers.Authorization = `Bearer ${token}`;
-
   const res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
+function isoDate(d) {
+  return new Date(d).toISOString().slice(0, 10);
 }
 
-function initialsOf(name = "") {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return parts.map(p => p[0]).join("").slice(0, 2).toUpperCase() || "A";
+function weekStartISO(offsetWeeks = 0) {
+  const now = new Date();
+  const day = now.getDay();
+  const diffToMon = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMon + offsetWeeks * 7);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
 }
 
-function randomAvatarColor() {
-  const colors = ["#3b82f6", "#a855f7", "#f97316", "#22c55e", "#FF9A52", "#ef4444", "#06b6d4"];
-  return colors[Math.floor(Math.random() * colors.length)];
+function dateForWeekDay(weekOffset, dayKey) {
+  const idx = DAYS.indexOf(dayKey);
+  const start = weekStartISO(weekOffset);
+  const d = new Date(start);
+  d.setDate(start.getDate() + (idx < 0 ? 0 : idx));
+  return isoDate(d);
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Small UI atoms
-────────────────────────────────────────────────────────────────────────────── */
-const Badge = ({ label, color = T.accent }) => (
-  <span
-    style={{
-      fontFamily: "DM Sans",
-      fontSize: 10,
-      fontWeight: 700,
-      padding: "2px 8px",
-      borderRadius: 999,
-      background: `${color}22`,
-      color,
-      border: `1px solid ${color}44`,
-      letterSpacing: 0.8,
-      whiteSpace: "nowrap",
-    }}
-  >
-    {label}
-  </span>
-);
+function miniBtnStyle(active = false, color = T.muted) {
+  return {
+    background: T.card,
+    border: `1px solid ${active ? `${T.accent}66` : T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: active ? T.accent : color,
+    cursor: "pointer",
+    fontFamily: "DM Sans",
+    fontSize: 12,
+    whiteSpace: "nowrap",
+  };
+}
 
-const Avatar = ({ initials, color, size = 40 }) => (
-  <div
-    style={{
-      width: size,
-      height: size,
-      borderRadius: "50%",
-      background: `${color}28`,
-      border: `2px solid ${color}55`,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      fontFamily: "Bebas Neue, system-ui",
-      fontSize: size * 0.38,
-      color,
-      flexShrink: 0,
-      userSelect: "none",
-    }}
-  >
-    {initials}
-  </div>
-);
+function thStyle() {
+  return {
+    textAlign: "left",
+    fontFamily: "Bebas Neue, system-ui",
+    letterSpacing: 1.5,
+    fontSize: 12,
+    color: T.muted,
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}`,
+  };
+}
 
-const StatCard = ({ label, value, color = T.text, sub, unit }) => (
-  <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 14, padding: "14px 12px" }}>
-    <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 26, color, lineHeight: 1 }}>
-      {value}
-      {unit && <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginLeft: 6 }}>{unit}</span>}
+function tdStyle() {
+  return {
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}22`,
+    fontFamily: "DM Sans",
+    fontSize: 12,
+    color: T.text,
+    verticalAlign: "middle",
+  };
+}
+
+function cellInput(width = 80) {
+  return {
+    width,
+    background: T.surface,
+    border: `1px solid ${T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: T.text,
+    fontFamily: "JetBrains Mono",
+    fontSize: 12,
+    outline: "none",
+  };
+}
+
+function StatCard({ label, value, unit, color }) {
+  return (
+    <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 14, padding: 14 }}>
+      <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 4 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 26, letterSpacing: 1.5, color }}>{value}</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{unit}</div>
+      </div>
     </div>
-    <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, marginTop: 6 }}>
-      {label}
+  );
+}
+
+function ErrorBox({ msg }) {
+  if (!msg) return null;
+  return (
+    <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{msg}</div>
+  );
+}
+
+function ConfirmDeleteModal({ open, athlete, onCancel, onConfirm, working, error }) {
+  if (!open || !athlete) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "grid", placeItems: "center", zIndex: 999, padding: 16 }}>
+      <div style={{ width: "100%", maxWidth: 560, background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 }}>
+          <div>
+            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 20, letterSpacing: 2, color: T.danger }}>DELETE ATHLETE</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
+              This permanently deletes <b>{athlete.name}</b> and all their history.
+            </div>
+          </div>
+          <button onClick={onCancel} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontFamily: "DM Sans" }} type="button">Close</button>
+        </div>
+
+        {error ? <ErrorBox msg={error} /> : null}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+          <button onClick={onCancel} disabled={working} style={{ ...miniBtnStyle(false), opacity: working ? 0.6 : 1 }} type="button">Cancel</button>
+          <button onClick={onConfirm} disabled={working} style={{ background: working ? `${T.danger}55` : T.danger, border: "none", borderRadius: 12, padding: "10px 14px", color: T.bg, cursor: working ? "default" : "pointer", fontFamily: "Bebas Neue, system-ui", letterSpacing: 2 }} type="button">
+            {working ? "DELETING…" : "DELETE"}
+          </button>
+        </div>
+      </div>
     </div>
-    {sub && <div style={{ fontFamily: "DM Sans", fontSize: 11, color, marginTop: 4 }}>{sub}</div>}
-  </div>
-);
+  );
+}
 
-const inputStyle = {
-  width: "100%",
-  background: T.surface,
-  border: `1px solid ${T.border}`,
-  borderRadius: 10,
-  padding: "11px 14px",
-  color: T.text,
-  fontFamily: "DM Sans",
-  fontSize: 13,
-  outline: "none",
-};
+function SparkLine({ labels, values, color = T.accent, height = 170 }) {
+  const width = 860;
+  const pad = 26;
+  if (!values.length) return null;
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const span = maxV - minV || 1;
 
-const labelStyle = {
-  fontFamily: "DM Sans",
-  fontSize: 11,
-  color: T.muted,
-  letterSpacing: 1,
-  textTransform: "uppercase",
-  display: "block",
-  marginBottom: 6,
-};
+  const x = (i) => pad + (i * (width - pad * 2)) / Math.max(1, values.length - 1);
+  const y = (v) => pad + (1 - (v - minV) / span) * (height - pad * 2);
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Coach Login
-────────────────────────────────────────────────────────────────────────────── */
-function CoachLogin({ onLoggedIn }) {
+  const d = values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <rect x="0" y="0" width={width} height={height} fill={T.surface} rx="14" />
+      <path d={d} fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" />
+      {values.map((v, i) => (
+        <g key={i}>
+          <circle cx={x(i)} cy={y(v)} r={3.6} fill={color} opacity={0.95} />
+          <title>{`${labels[i]}: ${v}`}</title>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function MultiLine({ labels, series, height = 200 }) {
+  const width = 860;
+  const pad = 26;
+  if (!series?.length || !labels.length) return null;
+  const all = series.flatMap((s) => s.values);
+  const minV = Math.min(...all);
+  const maxV = Math.max(...all);
+  const span = maxV - minV || 1;
+  const n = labels.length;
+
+  const x = (i) => pad + (i * (width - pad * 2)) / Math.max(1, n - 1);
+  const y = (v) => pad + (1 - (v - minV) / span) * (height - pad * 2);
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: "100%", height: "auto", display: "block" }}>
+      <rect x="0" y="0" width={width} height={height} fill={T.surface} rx="14" />
+      {series.map((s, si) => {
+        const d = s.values.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+        return <path key={si} d={d} fill="none" stroke={s.color} strokeWidth="2.6" strokeLinecap="round" />;
+      })}
+    </svg>
+  );
+}
+
+function Login({ onLoggedIn }) {
   const [email, setEmail] = useState("");
-  const [pass, setPass] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showPass, setShowPass] = useState(false);
 
-  // Demo accounts for quick fill (UI-only convenience)
-  const DEMOS = [
-    { email: "gerard@norules.com", password: "gerard1", name: "Gerard Queen", role: "Coach" },
-    { email: "luke@norules.com", password: "luke1", name: "Luke Bastick", role: "Coach" },
-    { email: "esme@norules.com", password: "esme1", name: "Esme", role: "Coach" },
-  ];
-
-  const handleLogin = async () => {
+  const submit = async () => {
     setErr("");
-    if (!email.trim() || !pass) {
-      setErr("Enter your coach credentials.");
-      return;
-    }
     setLoading(true);
     try {
       const data = await apiFetch("/auth/login", null, {
         method: "POST",
-        body: JSON.stringify({ email: email.trim().toLowerCase(), password: pass }),
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
       });
-
-      // data: { token, user }  (your backend returns this) [1](https://github.com/orgs/community/discussions/151670)
+      if (!data?.token) throw new Error("No token returned");
       localStorage.setItem(TOKEN_KEY, data.token);
-      onLoggedIn({ ...data.user, token: data.token });
+      onLoggedIn(data.token, data.user);
     } catch (e) {
-      setErr(e.message);
+      setErr(e.message || "Login failed");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: T.bg,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-        fontFamily: "DM Sans",
-      }}
-    >
-      <style>{`
-        *{box-sizing:border-box;margin:0;padding:0}
-        input::placeholder{color:${T.muted}}
-        input{caret-color:${T.accent}}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
-      `}</style>
+    <div style={{ minHeight: "100vh", background: T.bg, color: T.text, display: "grid", placeItems: "center", padding: 18 }}>
+      <div style={{ width: "100%", maxWidth: 520, background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>COACH LOGIN</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>Real coach account (no demo users)</div>
 
-      <div style={{ width: "100%", maxWidth: 440, animation: "fadeUp .35s ease" }}>
-        <div style={{ textAlign: "center", marginBottom: 34 }}>
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-            <img
-              src={LOGO_SRC}
-              alt="No Rules Nutrition"
-              style={{
-                width: 120,
-                height: 120,
-                borderRadius: "50%",
-                objectFit: "cover",
-                border: `3px solid ${T.accent}44`,
-                boxShadow: `0 0 32px ${T.accent}22`,
-              }}
-            />
-          </div>
-
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 8,
-              background: `${T.coachGreen}18`,
-              border: `1px solid ${T.coachGreen}44`,
-              borderRadius: 999,
-              padding: "4px 14px",
-            }}
-          >
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen }} />
-            <span style={{ fontSize: 11, color: T.coachGreen, letterSpacing: 1.5, textTransform: "uppercase" }}>
-              Coach Portal
-            </span>
-          </div>
-        </div>
-
-        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 20, padding: 30 }}>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text, marginBottom: 22 }}>
-            COACH SIGN IN
-          </div>
-
-          <div style={{ marginBottom: 14 }}>
-            <label style={labelStyle}>Email</label>
-            <input
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-              placeholder="coach@norules.com"
-              type="email"
-              style={inputStyle}
-            />
-          </div>
-
-          <div style={{ marginBottom: 18 }}>
-            <label style={labelStyle}>Password</label>
-            <div style={{ position: "relative" }}>
-              <input
-                value={pass}
-                onChange={(e) => setPass(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleLogin()}
-                placeholder="••••••••"
-                type={showPass ? "text" : "password"}
-                style={{ ...inputStyle, paddingRight: 52 }}
-              />
-              <button
-                onClick={() => setShowPass((p) => !p)}
-                style={{
-                  position: "absolute",
-                  right: 10,
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  background: "none",
-                  border: "none",
-                  color: T.muted,
-                  cursor: "pointer",
-                  fontSize: 12,
-                  fontFamily: "DM Sans",
-                }}
-                type="button"
-              >
-                {showPass ? "hide" : "show"}
-              </button>
-            </div>
-          </div>
-
-          {err && (
-            <div
-              style={{
-                background: `${T.danger}18`,
-                border: `1px solid ${T.danger}44`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                marginBottom: 14,
-                fontSize: 12,
-                color: T.danger,
-              }}
-            >
-              {err}
-            </div>
-          )}
-
-          <button
-            onClick={handleLogin}
-            disabled={loading}
-            style={{
-              width: "100%",
-              background: loading ? T.border : T.accent,
-              color: loading ? T.muted : T.bg,
-              border: "none",
-              borderRadius: 12,
-              padding: 14,
-              fontFamily: "Bebas Neue, system-ui",
-              fontSize: 18,
-              letterSpacing: 2,
-              cursor: loading ? "default" : "pointer",
-              transition: "all .2s",
-            }}
-            type="button"
-          >
-            {loading ? "SIGNING IN…" : "ACCESS COACH PORTAL"}
+        <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+          <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="email" style={{ width: "100%", ...cellInput("100%") }} />
+          <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password" type="password" style={{ width: "100%", ...cellInput("100%") }} />
+          {err ? <ErrorBox msg={err} /> : null}
+          <button onClick={submit} disabled={loading} style={{ background: loading ? T.border : T.accent, border: "none", borderRadius: 12, padding: "12px 16px", color: loading ? T.muted : T.bg, cursor: loading ? "default" : "pointer", fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 3 }} type="button">
+            {loading ? "SIGNING IN…" : "SIGN IN"}
           </button>
-        </div>
-
-        <div style={{ marginTop: 14, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-          <div style={{ fontSize: 11, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 }}>
-            Demo Accounts — click to fill
-          </div>
-
-          {DEMOS.map((d) => (
-            <button
-              key={d.email}
-              onClick={() => {
-                setEmail(d.email);
-                setPass(d.password);
-                setErr("");
-              }}
-              style={{
-                width: "100%",
-                textAlign: "left",
-                background: T.card,
-                border: `1px solid ${T.border}`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                marginBottom: 8,
-                cursor: "pointer",
-              }}
-              type="button"
-            >
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 13, color: T.text, fontWeight: 600 }}>{d.name}</span>
-                <Badge label={d.role} color={T.coachGreen} />
-              </div>
-              <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
-                {d.email}
-              </div>
-            </button>
-          ))}
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 11, color: T.muted, textAlign: "center" }}>
-          API: <span style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>{API_BASE}</span>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>API: {API_BASE}</div>
         </div>
       </div>
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Add Athlete Modal (persists to backend via POST /athletes)
-────────────────────────────────────────────────────────────────────────────── */
-function AddAthleteModal({ onClose, onCreate, creating }) {
-  const SPORTS = ["Triathlon", "Powerlifting", "CrossFit", "Swimming", "Running", "Other"];
-
-  const [form, setForm] = useState({
-    name: "",
-    loginEmail: "",
-    password: "",
-    sport: "Running",
-    mfpUsername: "",
-  });
-
-  const set = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
-
-  const valid =
-    form.name.trim() &&
-    form.loginEmail.trim() &&
-    form.password.trim() &&
-    form.password.trim().length >= 6;
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "#000000d0",
-        zIndex: 999,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-      }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}
-    >
-      <div
-        style={{
-          width: "100%",
-          maxWidth: 560,
-          background: T.card,
-          border: `1px solid ${T.accent}44`,
-          borderRadius: 22,
-          overflow: "hidden",
-          animation: "fadeUp .2s ease",
-        }}
-      >
-        <div style={{ padding: "20px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>
-              ADD NEW ATHLETE
-            </div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-              Creates an athlete account in the database (coach‑owned).
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 20 }}
-            type="button"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div style={{ padding: "18px 24px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={labelStyle}>Full Name *</label>
-              <input value={form.name} onChange={set("name")} placeholder="e.g. Alex Morgan" style={inputStyle} />
-            </div>
-
-            <div>
-              <label style={labelStyle}>Sport</label>
-              <select
-                value={form.sport}
-                onChange={set("sport")}
-                style={{ ...inputStyle, cursor: "pointer" }}
-              >
-                {SPORTS.map((s) => (
-                  <option key={s} value={s} style={{ background: T.bg }}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>Portal Login Email *</label>
-            <input value={form.loginEmail} onChange={set("loginEmail")} placeholder="athlete@norules.com" style={inputStyle} />
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>Password * (min 6 chars)</label>
-            <input value={form.password} onChange={set("password")} placeholder="Create a password…" style={inputStyle} />
-            {form.password && form.password.length < 6 && (
-              <div style={{ marginTop: 6, fontFamily: "DM Sans", fontSize: 11, color: T.danger }}>
-                Password must be at least 6 characters.
-              </div>
-            )}
-          </div>
-
-          <div style={{ marginTop: 12 }}>
-            <label style={labelStyle}>MyFitnessPal Username (optional)</label>
-            <input value={form.mfpUsername} onChange={set("mfpUsername")} placeholder="e.g. alexmorgan" style={inputStyle} />
-          </div>
-
-          <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-            <button
-              onClick={onClose}
-              style={{
-                flex: 1,
-                background: "none",
-                border: `1px solid ${T.border}`,
-                borderRadius: 10,
-                padding: 11,
-                color: T.muted,
-                fontFamily: "DM Sans",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-              type="button"
-            >
-              Cancel
-            </button>
-
-            <button
-              onClick={() => onCreate(form)}
-              disabled={!valid || creating}
-              style={{
-                flex: 2,
-                background: valid ? T.accent : T.border,
-                color: valid ? T.bg : T.muted,
-                border: "none",
-                borderRadius: 10,
-                padding: 11,
-                fontFamily: "Bebas Neue, system-ui",
-                fontSize: 16,
-                letterSpacing: 1.5,
-                cursor: valid && !creating ? "pointer" : "default",
-                transition: "all .2s",
-              }}
-              type="button"
-            >
-              {creating ? "CREATING…" : "CREATE ATHLETE"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Weekly Macro Plan — Rows per day
-   - GET /macro-plans/:athleteId (optional but recommended)
-   - PUT /macro-plans/:athleteId
-────────────────────────────────────────────────────────────────────────────── */
-function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
+function AddAthleteModal({ open, onClose, onCreated, token }) {
+  const [form, setForm] = useState({ name: "", email: "", password: "", sport: "" });
   const [err, setErr] = useState("");
-  const [saved, setSaved] = useState(false);
-
-  // Load current macro targets from saved macro plan (average of days)
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      try {
-        const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
-        if (ignore) return;
-        const vals = (rows || []).filter(Boolean);
-        if (!vals.length) return;
-        const sum = vals.reduce((a, r) => ({
-          calories: a.calories + Number(r.calories || 0),
-          protein: a.protein + Number(r.protein_g || 0),
-          carbs: a.carbs + Number(r.carbs_g || 0),
-          fat: a.fat + Number(r.fat_g || 0),
-        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-        const n = Math.max(1, vals.length);
-        const avg = {
-          calories: Math.round(sum.calories / n),
-          protein: Math.round(sum.protein / n),
-          carbs: Math.round(sum.carbs / n),
-          fat: Math.round(sum.fat / n),
-        };
-        setInitialGoals(avg);
-        setGoals(avg);
-      } catch {
-        // ignore
-      }
-    })();
-    return () => { ignore = true; };
-  }, [athlete.id, token]);
-
-
-  const emptyWeek = () =>
-    DAYS.reduce((acc, d) => {
-      acc[d] = {
-        calories: baseTargets?.calories ?? 2000,
-        protein: baseTargets?.protein ?? 150,
-        carbs: baseTargets?.carbs ?? 200,
-        fat: baseTargets?.fat ?? 70,
-      };
-      return acc;
-    }, {});
-
-  const [plan, setPlan] = useState(emptyWeek());
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    // refresh defaults when athlete changes
-    setPlan(emptyWeek());
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const setCell = (day, key, value) => {
-    const num = Number(value);
-    setPlan((p) => ({
-      ...p,
-      [day]: { ...p[day], [key]: Number.isFinite(num) ? num : 0 },
-    }));
-  };
-
-  const populateAll = () => setPlan(emptyWeek());
-
-  // Load saved plan if endpoint exists
-  useEffect(() => {
-    let ignore = false;
-    const load = async () => {
-      if (!athleteId) return;
-      setErr("");
-      setLoading(true);
-      try {
-        const rows = await apiFetch(`/macro-plans/${athleteId}`, token);
-        if (ignore) return;
-
-        const next = emptyWeek();
-        (rows || []).forEach((r) => {
-          const d = String(r.day_of_week || "").toUpperCase();
-          if (!next[d]) return;
-          next[d] = {
-            calories: r.calories ?? next[d].calories,
-            protein: r.protein_g ?? next[d].protein,
-            carbs: r.carbs_g ?? next[d].carbs,
-            fat: r.fat_g ?? next[d].fat,
-          };
-        });
-        setPlan(next);
-      } catch (e) {
-        // If not added yet, keep local-only
-        setErr(e.message);
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    };
-    load();
-    return () => {
-      ignore = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const savePlan = async () => {
+    if (!open) return;
+    setForm({ name: "", email: "", password: "", sport: "" });
     setErr("");
+    setSaving(false);
+  }, [open]);
+
+  if (!open) return null;
+
+  const submit = async () => {
+    setErr("");
+    if (!form.name || !form.email || !form.password) {
+      setErr("Name, email and password are required");
+      return;
+    }
     setSaving(true);
     try {
-      const payload = {
-        plans: DAYS.map((d) => ({
-          dayOfWeek: d,
-          calories: plan[d].calories,
-          protein_g: plan[d].protein,
-          carbs_g: plan[d].carbs,
-          fat_g: plan[d].fat,
-        })),
-      };
-
-      await apiFetch(`/macro-plans/${athleteId}`, token, {
-        method: "PUT",
-        body: JSON.stringify(payload),
+      const created = await apiFetch("/athletes", token, {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name.trim(),
+          email: form.email.trim().toLowerCase(),
+          password: form.password,
+          sport: form.sport.trim() || null,
+        }),
       });
-
-      setSaved(true);
-      onSaved?.(plan);
-      setTimeout(() => setSaved(false), 2000);
+      onCreated?.(created);
+      onClose?.();
     } catch (e) {
-      setErr(e.message);
+      setErr(e.message || "Could not create athlete");
     } finally {
       setSaving(false);
     }
   };
 
-  const avg = useMemo(() => {
-    const s = DAYS.reduce(
-      (a, d) => {
-        a.calories += plan[d].calories;
-        a.protein += plan[d].protein;
-        a.carbs += plan[d].carbs;
-        a.fat += plan[d].fat;
-        return a;
-      },
-      { calories: 0, protein: 0, carbs: 0, fat: 0 }
-    );
-
-    return {
-      calories: Math.round(s.calories / 7),
-      protein: Math.round(s.protein / 7),
-      carbs: Math.round(s.carbs / 7),
-      fat: Math.round(s.fat / 7),
-    };
-  }, [plan]);
-
-  const macroTh = {
-    textAlign: "left",
-    fontFamily: "Bebas Neue, system-ui",
-    fontSize: 12,
-    letterSpacing: 1.5,
-    color: "#9aa0a6",
-    padding: "10px 10px",
-    borderBottom: `1px solid ${T.border}`,
-  };
-
-  const macroTd = {
-    padding: "8px 10px",
-    borderBottom: `1px solid ${T.border}22`,
-    minWidth: 120,
-  };
-
-  const macroDayCell = {
-    padding: "8px 10px",
-    borderBottom: `1px solid ${T.border}22`,
-    fontFamily: "Bebas Neue, system-ui",
-    letterSpacing: 1.5,
-    color: T.accent,
-    minWidth: 70,
-  };
-
-  const macroAvg = {
-    padding: "10px 10px",
-    fontFamily: "JetBrains Mono, ui-monospace",
-    color: T.muted,
-    borderTop: `1px solid ${T.border}`,
-  };
-
-  const macroInput = {
-    width: "100%",
-    background: T.surface,
-    border: `1px solid ${T.border}`,
-    borderRadius: 8,
-    padding: "8px 10px",
-    color: T.text,
-    fontFamily: "JetBrains Mono, ui-monospace",
-    fontSize: 12,
-    outline: "none",
-  };
-
   return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
-            WEEKLY MACRO PLAN
-          </div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-            Rows per day · edit specific days or populate all days as an overview.
-          </div>
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.65)", display: "grid", placeItems: "center", zIndex: 999, padding: 16 }}>
+      <div style={{ width: "100%", maxWidth: 560, background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2 }}>ADD ATHLETE</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontFamily: "DM Sans" }} type="button">Close</button>
         </div>
 
-        <div style={{ display: "flex", gap: 10 }}>
-          <button
-            onClick={populateAll}
-            style={{
-              background: `${T.accent}14`,
-              border: `1px solid ${T.accent}40`,
-              borderRadius: 10,
-              padding: "8px 14px",
-              color: T.accent,
-              fontFamily: "DM Sans",
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-            type="button"
-          >
-            ⇅ Populate all days
-          </button>
-
-          <button
-            onClick={savePlan}
-            disabled={saving || loading}
-            style={{
-              background: saving ? T.border : T.accent,
-              border: "none",
-              borderRadius: 10,
-              padding: "8px 16px",
-              color: saving ? T.muted : T.bg,
-              fontFamily: "Bebas Neue, system-ui",
-              fontSize: 14,
-              letterSpacing: 1.5,
-              cursor: saving ? "default" : "pointer",
-            }}
-            type="button"
-          >
-            {saving ? "SAVING…" : "SAVE PLAN"}
+        <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
+          <input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Name" style={{ width: "100%", ...cellInput("100%") }} />
+          <input value={form.email} onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))} placeholder="Email" style={{ width: "100%", ...cellInput("100%") }} />
+          <input value={form.sport} onChange={(e) => setForm((f) => ({ ...f, sport: e.target.value }))} placeholder="Sport (optional)" style={{ width: "100%", ...cellInput("100%") }} />
+          <input value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} placeholder="Password" type="password" style={{ width: "100%", ...cellInput("100%") }} />
+          {err ? <ErrorBox msg={err} /> : null}
+          <button onClick={submit} disabled={saving} style={{ background: saving ? T.border : T.accent, border: "none", borderRadius: 12, padding: "12px 16px", color: saving ? T.muted : T.bg, cursor: saving ? "default" : "pointer", fontFamily: "Bebas Neue, system-ui", fontSize: 15, letterSpacing: 3 }} type="button">
+            {saving ? "CREATING…" : "CREATE"}
           </button>
         </div>
       </div>
-
-      {saved && (
-        <div
-          style={{
-            background: `${T.coachGreen}18`,
-            border: `1px solid ${T.coachGreen}44`,
-            borderRadius: 10,
-            padding: "10px 14px",
-            fontFamily: "DM Sans",
-            fontSize: 12,
-            color: T.coachGreen,
-            marginBottom: 12,
-          }}
-        >
-          ✓ Macro plan saved.
-        </div>
-      )}
-
-      {err && (
-        <div
-          style={{
-            background: `${T.warn}18`,
-            border: `1px solid ${T.warn}44`,
-            borderRadius: 10,
-            padding: "10px 14px",
-            fontFamily: "DM Sans",
-            fontSize: 12,
-            color: T.warn,
-            marginBottom: 12,
-          }}
-        >
-          {err}
-        </div>
-      )}
-
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontFamily: "DM Sans" }}>
-          <thead>
-            <tr>
-              <th style={macroTh}>DAY</th>
-              <th style={macroTh}>CAL</th>
-              <th style={macroTh}>PRO (g)</th>
-              <th style={macroTh}>CARB (g)</th>
-              <th style={macroTh}>FAT (g)</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {DAYS.map((d) => (
-              <tr key={d}>
-                <td style={macroDayCell}>{d}</td>
-
-                <td style={macroTd}>
-                  <input type="number" value={plan[d].calories} onChange={(e) => setCell(d, "calories", e.target.value)} style={macroInput} />
-                </td>
-
-                <td style={macroTd}>
-                  <input type="number" value={plan[d].protein} onChange={(e) => setCell(d, "protein", e.target.value)} style={macroInput} />
-                </td>
-
-                <td style={macroTd}>
-                  <input type="number" value={plan[d].carbs} onChange={(e) => setCell(d, "carbs", e.target.value)} style={macroInput} />
-                </td>
-
-                <td style={macroTd}>
-                  <input type="number" value={plan[d].fat} onChange={(e) => setCell(d, "fat", e.target.value)} style={macroInput} />
-                </td>
-              </tr>
-            ))}
-
-            <tr>
-              <td style={{ ...macroDayCell, color: T.muted }}>AVG</td>
-              <td style={macroAvg}>{avg.calories}</td>
-              <td style={macroAvg}>{avg.protein}</td>
-              <td style={macroAvg}>{avg.carbs}</td>
-              <td style={macroAvg}>{avg.fat}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      {loading && (
-        <div style={{ marginTop: 10, fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
-          Loading saved macro plan…
-        </div>
-      )}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Athlete detail panel (click athlete -> opens)
-   Tabs:
-   - NUTRITION (base targets used for overview)
-   - MACRO PLAN (rows-per-day)
-────────────────────────────────────────────────────────────────────────────── */
-function AthleteDetail({ athlete, token, onBack }) {
-  const [tab, setTab] = useState("nutrition");
-  const [editing, setEditing] = useState(false);
-  const [initialGoals, setInitialGoals] = useState(() => ({
-    calories: athlete.macroGoals?.calories ?? 2500,
-    protein: athlete.macroGoals?.protein ?? 180,
-    carbs: athlete.macroGoals?.carbs ?? 280,
-    fat: athlete.macroGoals?.fat ?? 75,
-  }));
-  const [goals, setGoals] = useState(() => initialGoals);
-  const [saved, setSaved] = useState(false);
+function WeeklyMacroPlan({ athleteId, token }) {
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const byDay = useMemo(() => Object.fromEntries((rows || []).map((r) => [r.day_of_week, r])), [rows]);
 
-  const handleSaveTargets = async () => {
-    // Persist these targets by applying them to ALL days in the macro plan and saving to backend
+  const load = async () => {
+    setErr("");
     try {
-      const payload = {
-        plans: DAYS.map((d) => ({
-          dayOfWeek: d,
-          calories: goals.calories,
-          protein_g: goals.protein,
-          carbs_g: goals.carbs,
-          fat_g: goals.fat,
-        })),
-      };
-      await apiFetch(`/macro-plans/${athlete.id}`, token, {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      });
-      setInitialGoals(goals);
-      setEditing(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1800);
+      const data = await apiFetch(`/macro-plans/${athleteId}`, token);
+      setRows(Array.isArray(data) ? data : []);
     } catch (e) {
-      alert(e.message || "Could not save targets");
+      setErr(e.message || "Could not load macro plan");
     }
   };
 
+  useEffect(() => {
+    if (!athleteId) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId]);
+
+  const setField = (day, key, val) => {
+    const num = Math.max(0, Math.min(20000, Number(val) || 0));
+    setRows((prev) => {
+      const existing = prev.find((r) => r.day_of_week === day);
+      if (!existing) {
+        return [...prev, { day_of_week: day, calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, [key]: num }];
+      }
+      return prev.map((r) => (r.day_of_week === day ? { ...r, [key]: num } : r));
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const plans = DAYS.map((d) => {
+        const r = byDay[d] || {};
+        return {
+          dayOfWeek: d,
+          calories: Number(r.calories || 0),
+          protein_g: Number(r.protein_g || 0),
+          carbs_g: Number(r.carbs_g || 0),
+          fat_g: Number(r.fat_g || 0),
+        };
+      });
+      await apiFetch(`/macro-plans/${athleteId}`, token, { method: "PUT", body: JSON.stringify({ plans }) });
+      await load();
+    } catch (e) {
+      setErr(e.message || "Could not save macro plan");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2 }}>WEEKLY MACRO PLAN</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Baseline plan (Mon-Sun)</div>
+        </div>
+        <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(false, T.accent), borderColor: `${T.accent}55`, color: T.accent }} type="button">{saving ? "SAVING…" : "SAVE"}</button>
+      </div>
+      <ErrorBox msg={err} />
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr>
+              <th style={thStyle()}>DAY</th>
+              <th style={thStyle()}>CAL</th>
+              <th style={thStyle()}>P</th>
+              <th style={thStyle()}>C</th>
+              <th style={thStyle()}>F</th>
+            </tr>
+          </thead>
+          <tbody>
+            {DAYS.map((d) => {
+              const r = byDay[d] || {};
+              return (
+                <tr key={d}>
+                  <td style={tdStyle()}>{d}</td>
+                  <td style={tdStyle()}><input value={r.calories ?? 0} onChange={(e) => setField(d, "calories", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={r.protein_g ?? 0} onChange={(e) => setField(d, "protein_g", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={r.carbs_g ?? 0} onChange={(e) => setField(d, "carbs_g", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={r.fat_g ?? 0} onChange={(e) => setField(d, "fat_g", e.target.value)} style={cellInput(90)} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function TargetsCalendar({ athleteId, token }) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [rows, setRows] = useState({});
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const start = isoDate(weekStartISO(weekOffset));
+  const endD = new Date(weekStartISO(weekOffset));
+  endD.setDate(endD.getDate() + 6);
+  const end = isoDate(endD);
+
+  const load = async () => {
+    setErr("");
+    try {
+      const data = await apiFetch(`/macro-targets/${athleteId}?start=${start}&end=${end}`, token);
+      const map = {};
+      (data || []).forEach((r) => {
+        map[r.date] = { calories: Number(r.calories || 0), protein_g: Number(r.protein_g || 0), carbs_g: Number(r.carbs_g || 0), fat_g: Number(r.fat_g || 0) };
+      });
+      // ensure all days exist
+      for (const d of DAYS) {
+        const date = dateForWeekDay(weekOffset, d);
+        if (!map[date]) map[date] = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+      }
+      setRows(map);
+    } catch (e) {
+      setErr(e.message || "Could not load targets");
+    }
+  };
+
+  useEffect(() => {
+    if (!athleteId) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId, weekOffset]);
+
+  const setField = (date, key, val) => {
+    const num = Math.max(0, Math.min(20000, Number(val) || 0));
+    setRows((prev) => ({ ...prev, [date]: { ...(prev[date] || {}), [key]: num } }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const entries = Object.entries(rows).map(([date, v]) => ({ date, calories: v.calories || 0, protein_g: v.protein_g || 0, carbs_g: v.carbs_g || 0, fat_g: v.fat_g || 0 }));
+      await apiFetch(`/macro-targets/${athleteId}`, token, { method: "PUT", body: JSON.stringify({ entries }) });
+    } catch (e) {
+      setErr(e.message || "Could not save targets");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2 }}>CAL TARGETS (DATE)</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{start} → {end}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={() => setWeekOffset((w) => w - 1)} style={miniBtnStyle()} type="button">◀</button>
+          <button onClick={() => setWeekOffset((w) => Math.min(0, w + 1))} style={miniBtnStyle()} type="button">▶</button>
+          <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(false, T.accent), borderColor: `${T.accent}55`, color: T.accent }} type="button">{saving ? "SAVING…" : "SAVE"}</button>
+        </div>
+      </div>
+      <ErrorBox msg={err} />
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr>
+              <th style={thStyle()}>DAY</th>
+              <th style={thStyle()}>DATE</th>
+              <th style={thStyle()}>CAL</th>
+              <th style={thStyle()}>P</th>
+              <th style={thStyle()}>C</th>
+              <th style={thStyle()}>F</th>
+            </tr>
+          </thead>
+          <tbody>
+            {DAYS.map((d) => {
+              const date = dateForWeekDay(weekOffset, d);
+              const v = rows[date] || { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+              return (
+                <tr key={date}>
+                  <td style={tdStyle()}>{d}</td>
+                  <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
+                  <td style={tdStyle()}><input value={v.calories} onChange={(e) => setField(date, "calories", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={v.protein_g} onChange={(e) => setField(date, "protein_g", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={v.carbs_g} onChange={(e) => setField(date, "carbs_g", e.target.value)} style={cellInput(90)} /></td>
+                  <td style={tdStyle()}><input value={v.fat_g} onChange={(e) => setField(date, "fat_g", e.target.value)} style={cellInput(90)} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function WeightPanel({ athleteId, token }) {
+  const [days, setDays] = useState(30);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try {
+      const w = await apiFetch(`/weights/${athleteId}`, token);
+      setRows(Array.isArray(w) ? w : []);
+    } catch (e) {
+      setErr(e.message || "Could not load weights");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId]);
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (days - 1));
+  const start = isoDate(startD);
+  const dates = Array.from({ length: days }, (_, i) => isoDate(new Date(startD.getTime() + i * 86400000)));
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
+  const pts = dates.filter((d) => map[d]).map((d) => ({ d, v: Number(map[d].kg) }));
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>WEIGHT</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{start} → {end}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setDays(d)} style={miniBtnStyle(days === d)} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+        </div>
+      </div>
+      <ErrorBox msg={err} />
+      {pts.length ? <div style={{ marginTop: 12 }}><SparkLine labels={pts.map((p) => p.d)} values={pts.map((p) => p.v)} color={T.coachGreen} /></div> : <div style={{ marginTop: 12, color: T.muted, fontFamily: "DM Sans", fontSize: 12 }}>No weight entries yet.</div>}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead><tr><th style={thStyle()}>DATE</th><th style={thStyle()}>KG</th></tr></thead>
+          <tbody>
+            {dates.slice().reverse().map((d) => (
+              <tr key={d}>
+                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{d}</td>
+                <td style={tdStyle()}>{map[d] ? Number(map[d].kg).toFixed(1) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MoodPanel({ athleteId, token }) {
+  const [days, setDays] = useState(30);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try {
+      const m = await apiFetch(`/moods/${athleteId}`, token);
+      setRows(Array.isArray(m) ? m : []);
+    } catch (e) {
+      setErr(e.message || "Could not load moods");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId]);
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (days - 1));
+  const start = isoDate(startD);
+  const dates = Array.from({ length: days }, (_, i) => isoDate(new Date(startD.getTime() + i * 86400000)));
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
+  const pts = dates.filter((d) => map[d]).map((d) => ({ d, v: Number(map[d].mood_id || 0) }));
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>MOOD</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{start} → {end}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setDays(d)} style={miniBtnStyle(days === d)} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+        </div>
+      </div>
+      <ErrorBox msg={err} />
+      {pts.length ? <div style={{ marginTop: 12 }}><SparkLine labels={pts.map((p) => p.d)} values={pts.map((p) => p.v)} color={T.accent} /></div> : <div style={{ marginTop: 12, color: T.muted, fontFamily: "DM Sans", fontSize: 12 }}>No mood entries yet.</div>}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead><tr><th style={thStyle()}>DATE</th><th style={thStyle()}>MOOD</th><th style={thStyle()}>NOTE</th></tr></thead>
+          <tbody>
+            {dates.slice().reverse().map((d) => (
+              <tr key={d}>
+                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{d}</td>
+                <td style={tdStyle()}>{map[d] ? `${map[d].emoji || ""} ${map[d].label || map[d].mood_id}` : "—"}</td>
+                <td style={{ ...tdStyle(), color: T.muted }}>{map[d]?.note || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function ConsumedPanel({ athleteId, token }) {
+  const [days, setDays] = useState(30);
+  const [rows, setRows] = useState([]);
+  const [targets, setTargets] = useState([]);
+  const [err, setErr] = useState("");
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (days - 1));
+  const start = isoDate(startD);
+  const dates = Array.from({ length: days }, (_, i) => isoDate(new Date(startD.getTime() + i * 86400000)));
+
+  const load = async () => {
+    setErr("");
+    try {
+      const [t, mt] = await Promise.all([
+        apiFetch(`/daily-totals/${athleteId}?start=${start}&end=${end}`, token),
+        apiFetch(`/macro-targets/${athleteId}?start=${start}&end=${end}`, token).catch(() => []),
+      ]);
+      setRows(Array.isArray(t) ? t : []);
+      setTargets(Array.isArray(mt) ? mt : []);
+    } catch (e) {
+      setErr(e.message || "Could not load consumed totals");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId, days]);
+
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
+  const tmap = Object.fromEntries(targets.map((r) => [r.date, r]));
+
+  const calSeries = dates.map((d) => (map[d] ? Number(map[d].calories || 0) : 0));
+  const tarSeries = dates.map((d) => (tmap[d] ? Number(tmap[d].calories || 0) : 0));
+
+  const hasAny = rows.length || targets.length;
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>CONSUMED vs TARGET</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{start} → {end}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setDays(d)} style={miniBtnStyle(days === d)} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+        </div>
+      </div>
+      <ErrorBox msg={err} />
+
+      {hasAny ? (
+        <div style={{ marginTop: 12 }}>
+          <MultiLine labels={dates} series={[{ name: "Consumed", color: T.accent, values: calSeries }, { name: "Target", color: T.coachGreen, values: tarSeries }]} />
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8, fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: T.accent, marginRight: 6 }} />Consumed</span>
+            <span><span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: T.coachGreen, marginRight: 6 }} />Target</span>
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, color: T.muted, fontFamily: "DM Sans", fontSize: 12 }}>No daily totals yet (client must SAVE DAY).</div>
+      )}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead><tr><th style={thStyle()}>DATE</th><th style={thStyle()}>CAL</th><th style={thStyle()}>P</th><th style={thStyle()}>C</th><th style={thStyle()}>F</th><th style={thStyle()}>NOTE</th></tr></thead>
+          <tbody>
+            {dates.slice().reverse().map((d) => (
+              <tr key={d}>
+                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{d}</td>
+                <td style={tdStyle()}>{map[d] ? map[d].calories : "—"}</td>
+                <td style={tdStyle()}>{map[d] ? map[d].protein_g : "—"}</td>
+                <td style={tdStyle()}>{map[d] ? map[d].carbs_g : "—"}</td>
+                <td style={tdStyle()}>{map[d] ? map[d].fat_g : "—"}</td>
+                <td style={{ ...tdStyle(), color: T.muted }}>{map[d]?.note || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CheckinCalendarPanel({ athleteId, token }) {
+  const [days, setDays] = useState(30);
+  const [items, setItems] = useState([]);
+  const [err, setErr] = useState("");
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ date: "", title: "Check-in", linkUrl: "", notes: "" });
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (days - 1));
+  const start = isoDate(startD);
+
+  const load = async () => {
+    setErr("");
+    try {
+      const rows = await apiFetch(`/checkins/${athleteId}?start=${start}&end=${end}`, token);
+      setItems(Array.isArray(rows) ? rows : []);
+    } catch (e) {
+      setErr(e.message || "Could not load check-ins");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId, days]);
+
+  const create = async () => {
+    setErr("");
+    try {
+      await apiFetch(`/checkins/${athleteId}`, token, { method: "POST", body: JSON.stringify(form) });
+      setOpen(false);
+      setForm({ date: "", title: "Check-in", linkUrl: "", notes: "" });
+      await load();
+    } catch (e) {
+      setErr(e.message || "Could not create check-in");
+    }
+  };
+
+  const remove = async (id) => {
+    setErr("");
+    try {
+      await apiFetch(`/checkins/${athleteId}/${id}`, token, { method: "DELETE" });
+      await load();
+    } catch (e) {
+      setErr(e.message || "Could not delete check-in");
+    }
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>CHECK-IN CALENDAR</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{start} → {end}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setDays(d)} style={miniBtnStyle(days === d)} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+          <button onClick={() => setOpen(true)} style={{ ...miniBtnStyle(false, T.accent), borderColor: `${T.accent}55`, color: T.accent }} type="button">+ Add</button>
+        </div>
+      </div>
+      <ErrorBox msg={err} />
+
+      {open ? (
+        <div style={{ marginTop: 12, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <input value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} placeholder="YYYY-MM-DD" style={{ ...cellInput("100%"), width: "100%" }} />
+            <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Title" style={{ ...cellInput("100%"), width: "100%" }} />
+          </div>
+          <input value={form.linkUrl} onChange={(e) => setForm((f) => ({ ...f, linkUrl: e.target.value }))} placeholder="Link (Teams/Zoom/URL)" style={{ ...cellInput("100%"), width: "100%", marginTop: 10 }} />
+          <textarea value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Notes" style={{ ...cellInput("100%"), width: "100%", marginTop: 10, height: 80 }} />
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+            <button onClick={() => setOpen(false)} style={miniBtnStyle()} type="button">Cancel</button>
+            <button onClick={create} style={{ ...miniBtnStyle(false, T.coachGreen), borderColor: `${T.coachGreen}66`, color: T.coachGreen }} type="button">Save</button>
+          </div>
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead><tr><th style={thStyle()}>DATE</th><th style={thStyle()}>TITLE</th><th style={thStyle()}>LINK</th><th style={thStyle()}>NOTES</th><th style={thStyle()}></th></tr></thead>
+          <tbody>
+            {items.map((it) => (
+              <tr key={it.id}>
+                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{it.date}</td>
+                <td style={tdStyle()}>{it.title}</td>
+                <td style={tdStyle()}>{it.linkUrl ? <a href={it.linkUrl} target="_blank" rel="noreferrer" style={{ color: T.info }}>Open</a> : "—"}</td>
+                <td style={{ ...tdStyle(), color: T.muted }}>{it.notes || ""}</td>
+                <td style={tdStyle()}><button onClick={() => remove(it.id)} style={{ ...miniBtnStyle(false, T.danger), borderColor: `${T.danger}55`, color: T.danger }} type="button">Delete</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function AthleteDetail({ athlete, token, onBack, onDelete }) {
+  const [tab, setTab] = useState("macroplan");
   const tabs = [
-    { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
     { id: "targets", label: "CAL TARGETS" },
     { id: "weight", label: "WEIGHT" },
     { id: "mood", label: "MOOD" },
     { id: "consumed", label: "CONSUMED" },
+    { id: "calendar", label: "CHECK-IN CAL" },
   ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .2s ease" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-        <button
-          onClick={onBack}
-          style={{
-            background: T.card,
-            border: `1px solid ${T.border}`,
-            borderRadius: 8,
-            padding: "6px 14px",
-            color: T.muted,
-            fontFamily: "DM Sans",
-            fontSize: 12,
-            cursor: "pointer",
-          }}
-          type="button"
-        >
-          ← Back
-        </button>
-
-        <Avatar initials={athlete.avatar} color={athlete.avatarColor} size={52} />
-
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 2 }}>
-            <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 26, letterSpacing: 1.5, color: T.text }}>
-              {athlete.name.toUpperCase()}
-            </span>
-            <Badge label={athlete.sport || "ATHLETE"} color={T.coachGreen} />
-          </div>
-
-          <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11, color: T.muted }}>
-            {athlete.email}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-        <StatCard label="CAL TARGET" value={goals.calories} color={T.accent} unit="kcal" />
-        <StatCard label="PROTEIN" value={goals.protein} color={T.protein} unit="g" />
-        <StatCard label="CARBS" value={goals.carbs} color={T.carbs} unit="g" />
-        <StatCard label="FAT" value={goals.fat} color={T.fat} unit="g" />
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button onClick={onBack} style={{ ...miniBtnStyle(false), padding: "8px 14px" }} type="button">← Back</button>
+        <button onClick={() => onDelete(athlete)} style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "8px 12px", color: T.danger, cursor: "pointer", fontFamily: "DM Sans", fontSize: 12 }} type="button">Delete Athlete</button>
+        <div style={{ fontFamily: "Bebas Neue", fontSize: 26, letterSpacing: 2, marginLeft: 6 }}>{(athlete.name || "ATHLETE").toUpperCase()}</div>
+        <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{athlete.email}</div>
       </div>
 
       <div style={{ display: "flex", borderBottom: `1px solid ${T.border}`, gap: 1, overflowX: "auto" }}>
@@ -1000,10 +869,8 @@ function AthleteDetail({ athlete, token, onBack }) {
               fontSize: 13,
               letterSpacing: 1.5,
               color: tab === t.id ? T.accent : T.muted,
-              whiteSpace: "nowrap",
               borderBottom: tab === t.id ? `2px solid ${T.accent}` : "2px solid transparent",
-              marginBottom: -1,
-              transition: "all .2s",
+              whiteSpace: "nowrap",
             }}
             type="button"
           >
@@ -1012,234 +879,97 @@ function AthleteDetail({ athlete, token, onBack }) {
         ))}
       </div>
 
-      {tab === "nutrition" && (
-        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
-          {saved && (
-            <div
-              style={{
-                background: `${T.coachGreen}18`,
-                border: `1px solid ${T.coachGreen}44`,
-                borderRadius: 10,
-                padding: "10px 14px",
-                fontFamily: "DM Sans",
-                fontSize: 12,
-                color: T.coachGreen,
-                marginBottom: 12,
-              }}
-            >
-              ✓ Targets updated (local defaults for macro overview).
-            </div>
-          )}
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-            <div>
-              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
-                MACRO TARGETS (DEFAULTS)
-              </div>
-              <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-                Used by “Populate all days” in the Macro Plan tab.
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8 }}>
-              {editing ? (
-                <>
-                  <button
-                    onClick={() => {
-                      setGoals({
-                        calories: athlete.macroGoals?.calories ?? 2500,
-                        protein: athlete.macroGoals?.protein ?? 180,
-                        carbs: athlete.macroGoals?.carbs ?? 280,
-                        fat: athlete.macroGoals?.fat ?? 75,
-                      });
-                      setEditing(false);
-                    }}
-                    style={{
-                      background: "none",
-                      border: `1px solid ${T.border}`,
-                      borderRadius: 10,
-                      padding: "8px 12px",
-                      color: T.muted,
-                      fontFamily: "DM Sans",
-                      fontSize: 12,
-                      cursor: "pointer",
-                    }}
-                    type="button"
-                  >
-                    Cancel
-                  </button>
-
-                  <button
-                    onClick={handleSaveTargets}
-                    style={{
-                      background: T.accent,
-                      border: "none",
-                      borderRadius: 10,
-                      padding: "8px 14px",
-                      color: T.bg,
-                      fontFamily: "Bebas Neue, system-ui",
-                      fontSize: 14,
-                      letterSpacing: 1.5,
-                      cursor: "pointer",
-                    }}
-                    type="button"
-                  >
-                    SAVE
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setEditing(true)}
-                  style={{
-                    background: "none",
-                    border: `1px solid ${T.accent}44`,
-                    borderRadius: 10,
-                    padding: "8px 14px",
-                    color: T.accent,
-                    fontFamily: "DM Sans",
-                    fontSize: 12,
-                    cursor: "pointer",
-                  }}
-                  type="button"
-                >
-                  ✏ Edit Targets
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            {[
-              { key: "calories", label: "Calories", unit: "kcal", color: T.accent },
-              { key: "protein", label: "Protein", unit: "g", color: T.protein },
-              { key: "carbs", label: "Carbs", unit: "g", color: T.carbs },
-              { key: "fat", label: "Fat", unit: "g", color: T.fat },
-            ].map((m) => (
-              <div key={m.key}>
-                <label style={labelStyle}>{m.label}</label>
-                {editing ? (
-                  <input
-                    type="number"
-                    value={goals[m.key]}
-                    onChange={(e) => setGoals((g) => ({ ...g, [m.key]: clamp(Number(e.target.value), 0, 20000) }))}
-                    style={{
-                      ...inputStyle,
-                      border: `1px solid ${m.color}44`,
-                      color: m.color,
-                      fontFamily: "JetBrains Mono, ui-monospace",
-                      fontSize: 14,
-                      fontWeight: 700,
-                    }}
-                  />
-                ) : (
-                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-                    <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 30, color: m.color }}>{goals[m.key]}</span>
-                    <span style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{m.unit}</span>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {tab === "macroplan" && (
-        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
-        const tot = DAYS.reduce((a, d) => ({
-          calories: a.calories + Number(p[d].calories || 0),
-          protein: a.protein + Number(p[d].protein || 0),
-          carbs: a.carbs + Number(p[d].carbs || 0),
-          fat: a.fat + Number(p[d].fat || 0),
-        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-        const next = {
-          calories: Math.round(tot.calories / 7),
-          protein: Math.round(tot.protein / 7),
-          carbs: Math.round(tot.carbs / 7),
-          fat: Math.round(tot.fat / 7),
-        };
-        setInitialGoals(next);
-        setGoals(next);
-      }} />
-      )}
+      {tab === "macroplan" ? <WeeklyMacroPlan athleteId={athlete.id} token={token} /> : null}
+      {tab === "targets" ? <TargetsCalendar athleteId={athlete.id} token={token} /> : null}
+      {tab === "weight" ? <WeightPanel athleteId={athlete.id} token={token} /> : null}
+      {tab === "mood" ? <MoodPanel athleteId={athlete.id} token={token} /> : null}
+      {tab === "consumed" ? <ConsumedPanel athleteId={athlete.id} token={token} /> : null}
+      {tab === "calendar" ? <CheckinCalendarPanel athleteId={athlete.id} token={token} /> : null}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Main Coach CMS
-────────────────────────────────────────────────────────────────────────────── */
-
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Separate panels for Weight / Mood / Consumed
-   These are split out so each can fail independently and you can see data clearly.
-───────────────────────────────────────────────────────────────────────────── */
-function WeightPanel({ athleteId, token }) {
-  const [rangeDays, setRangeDays] = useState(30);
-  const [rows, setRows] = useState([]);
+function OverviewDashboard({ token, days, setDays, onSelectAthlete }) {
+  const [data, setData] = useState(null);
   const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const load = async () => {
     setErr("");
+    setLoading(true);
     try {
-      const w = await apiFetch(`/weights/${athleteId}`, token);
-      setRows(Array.isArray(w) ? w : []);
+      const res = await apiFetch(`/coach/overview?days=${days}`, token);
+      setData(res);
     } catch (e) {
-      setErr(e.message || "Could not load weights");
+      setErr(e.message || "Could not load overview");
+      setData(null);
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!athleteId) return;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
+  }, [days]);
 
-  // render date window
-  const end = isoDate(new Date());
-  const startD = new Date();
-  startD.setDate(startD.getDate() - (rangeDays - 1));
-  const start = isoDate(startD);
-  const dates = [];
-  for (let i = 0; i < rangeDays; i++) {
-    const d = new Date(startD.getTime() + i * 86400000);
-    dates.push(isoDate(d));
-  }
-  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
+  const athletes = data?.athletes || [];
+  const avg = (arr) => {
+    const nums = arr.filter((x) => typeof x === "number" && Number.isFinite(x));
+    return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : null;
+  };
+
+  const avgMood = avg(athletes.map((a) => a.moodAvg));
+  const avgAdh = avg(athletes.map((a) => a.adherencePct));
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEIGHT</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live weights by date.</div>
+          <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>COACH DASHBOARD</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Weight Δ%, Avg Mood, Macro Adherence — last {days} days</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {[7, 30, 90, 180].map((d) => (
-            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
+            <button key={d} onClick={() => setDays(d)} style={miniBtnStyle(days === d)} type="button">{d}d</button>
           ))}
-          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
+          <button onClick={load} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">{loading ? "Loading…" : "Refresh"}</button>
         </div>
       </div>
 
-      {err ? (
-        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
-      ) : null}
+      <ErrorBox msg={err} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginTop: 14 }}>
+        <StatCard label="AVG MOOD" value={avgMood ? avgMood.toFixed(2) : "—"} color={T.accent} unit="id" />
+        <StatCard label="AVG ADHERENCE" value={avgAdh ? avgAdh.toFixed(0) : "—"} color={T.coachGreen} unit="%" />
+        <StatCard label="ATHLETES" value={athletes.length} color={T.info} unit="" />
+      </div>
 
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead>
             <tr>
-              <th style={thStyle()}>DATE</th>
-              <th style={thStyle()}>KG</th>
+              <th style={thStyle()}>ATHLETE</th>
+              <th style={thStyle()}>WEIGHT Δ%</th>
+              <th style={thStyle()}>LATEST KG</th>
+              <th style={thStyle()}>AVG MOOD</th>
+              <th style={thStyle()}>ADHERENCE</th>
             </tr>
           </thead>
           <tbody>
-            {dates.slice().reverse().map((date) => (
-              <tr key={date}>
-                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
-                <td style={tdStyle()}>{map[date] ? Number(map[date].kg).toFixed(1) : "—"}</td>
+            {athletes.map((a) => (
+              <tr key={a.id}>
+                <td style={tdStyle()}>
+                  <button onClick={() => onSelectAthlete(a)} style={{ background: "none", border: "none", color: T.text, cursor: "pointer", fontFamily: "DM Sans", fontSize: 12, padding: 0 }} type="button">
+                    {a.name || a.email || "Athlete"}
+                  </button>
+                </td>
+                <td style={{ ...tdStyle(), color: typeof a.weightChangePct === "number" ? (a.weightChangePct >= 0 ? T.coachGreen : T.danger) : T.muted }}>
+                  {typeof a.weightChangePct === "number" ? `${a.weightChangePct.toFixed(1)}%` : "—"}
+                </td>
+                <td style={tdStyle()}>{typeof a.latestKg === "number" ? Number(a.latestKg).toFixed(1) : "—"}</td>
+                <td style={tdStyle()}>{typeof a.moodAvg === "number" ? a.moodAvg.toFixed(2) : "—"}</td>
+                <td style={tdStyle()}>{typeof a.adherencePct === "number" ? `${a.adherencePct.toFixed(0)}%` : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -1249,497 +979,155 @@ function WeightPanel({ athleteId, token }) {
   );
 }
 
-function MoodPanel({ athleteId, token }) {
-  const [rangeDays, setRangeDays] = useState(30);
-  const [rows, setRows] = useState([]);
-  const [err, setErr] = useState("");
-
-  const load = async () => {
-    setErr("");
-    try {
-      const m = await apiFetch(`/moods/${athleteId}`, token);
-      setRows(Array.isArray(m) ? m : []);
-    } catch (e) {
-      setErr(e.message || "Could not load moods");
-    }
-  };
-
-  useEffect(() => {
-    if (!athleteId) return;
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId]);
-
-  const end = isoDate(new Date());
-  const startD = new Date();
-  startD.setDate(startD.getDate() - (rangeDays - 1));
-  const start = isoDate(startD);
-  const dates = [];
-  for (let i = 0; i < rangeDays; i++) {
-    const d = new Date(startD.getTime() + i * 86400000);
-    dates.push(isoDate(d));
-  }
-  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live moods by date.</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {[7, 30, 90, 180].map((d) => (
-            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
-          ))}
-          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
-        </div>
-      </div>
-
-      {err ? (
-        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
-      ) : null}
-
-      <div style={{ marginTop: 14, overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-          <thead>
-            <tr>
-              <th style={thStyle()}>DATE</th>
-              <th style={thStyle()}>MOOD</th>
-              <th style={thStyle()}>NOTE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {dates.slice().reverse().map((date) => {
-              const r = map[date];
-              return (
-                <tr key={date}>
-                  <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
-                  <td style={tdStyle()}>{r ? `${r.emoji || ""} ${r.label || r.mood_id}` : "—"}</td>
-                  <td style={{ ...tdStyle(), color: T.muted }}>{r?.note || ""}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function ConsumedPanel({ athleteId, token }) {
-  const [rangeDays, setRangeDays] = useState(30);
-  const [rows, setRows] = useState([]);
-  const [err, setErr] = useState("");
-
-  const end = isoDate(new Date());
-  const startD = new Date();
-  startD.setDate(startD.getDate() - (rangeDays - 1));
-  const start = isoDate(startD);
-
-  const load = async () => {
-    setErr("");
-    try {
-      const t = await apiFetch(`/daily-totals/${athleteId}?start=${start}&end=${end}`, token);
-      setRows(Array.isArray(t) ? t : []);
-    } catch (e) {
-      setErr(e.message || "Could not load daily totals");
-    }
-  };
-
-  useEffect(() => {
-    if (!athleteId) return;
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId, rangeDays]);
-
-  const dates = [];
-  for (let i = 0; i < rangeDays; i++) {
-    const d = new Date(startD.getTime() + i * 86400000);
-    dates.push(isoDate(d));
-  }
-  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MACROS CONSUMED</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live daily totals by date (from client “Save Day”).</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {[7, 30, 90, 180].map((d) => (
-            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
-          ))}
-          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
-          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
-        </div>
-      </div>
-
-      {err ? (
-        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
-      ) : null}
-
-      <div style={{ marginTop: 14, overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
-          <thead>
-            <tr>
-              <th style={thStyle()}>DATE</th>
-              <th style={thStyle()}>CAL</th>
-              <th style={thStyle()}>P</th>
-              <th style={thStyle()}>C</th>
-              <th style={thStyle()}>F</th>
-              <th style={thStyle()}>NOTE</th>
-            </tr>
-          </thead>
-          <tbody>
-            {dates.slice().reverse().map((date) => {
-              const r = map[date];
-              return (
-                <tr key={date}>
-                  <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
-                  <td style={tdStyle()}>{r ? r.calories : "—"}</td>
-                  <td style={tdStyle()}>{r ? r.protein_g : "—"}</td>
-                  <td style={tdStyle()}>{r ? r.carbs_g : "—"}</td>
-                  <td style={tdStyle()}>{r ? r.fat_g : "—"}</td>
-                  <td style={{ ...tdStyle(), color: T.muted }}>{r?.note || ""}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-
 export default function CoachCMS() {
-  const [me, setMe] = useState(null); // { id, email, name, role, token }
-  const [token, setToken] = useState(null);
-  const [loadingRoster, setLoadingRoster] = useState(false);
-  const [rosterErr, setRosterErr] = useState("");
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || "");
+  const [me, setMe] = useState(null);
   const [athletes, setAthletes] = useState([]);
-  const [view, setView] = useState("overview"); // overview | athlete
   const [selected, setSelected] = useState(null);
+  const [adding, setAdding] = useState(false);
 
-  const [showAdd, setShowAdd] = useState(false);
-  const [creating, setCreating] = useState(false);
+  const [overviewDays, setOverviewDays] = useState(30);
 
-  // Inject fonts once
-  useEffect(() => {
-    const link = document.createElement("link");
-    link.rel = "stylesheet";
-    link.href =
-      "https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap";
-    document.head.appendChild(link);
-    return () => link.remove();
-  }, []);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteWorking, setDeleteWorking] = useState(false);
+  const [deleteErr, setDeleteErr] = useState("");
 
-  // Try restore session token from localStorage, then /auth/me
-  useEffect(() => {
-    const t = localStorage.getItem(TOKEN_KEY);
-    if (!t) return;
-
-    setToken(t);
-    (async () => {
-      try {
-        const user = await apiFetch("/auth/me", t); // backend supports this [1](https://github.com/orgs/community/discussions/151670)
-        setMe({ ...user, token: t });
-      } catch {
-        localStorage.removeItem(TOKEN_KEY);
-        setToken(null);
-        setMe(null);
-      }
-    })();
-  }, []);
-
-  // Load roster after login
-  useEffect(() => {
-    if (!token || !me) return;
-    if (me.role !== "coach") return;
-
-    setRosterErr("");
-    setLoadingRoster(true);
-
-    (async () => {
-      try {
-        const rows = await apiFetch("/athletes", token); // backend supports this [1](https://github.com/orgs/community/discussions/151670)
-        const mapped = rows.map((a) => ({
-          id: a.id,
-          name: a.name,
-          email: a.email,
-          sport: a.sport || "—",
-          avatar: initialsOf(a.name),
-          avatarColor: randomAvatarColor(),
-          macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
-        }));
-        setAthletes(mapped);
-      } catch (e) {
-        setRosterErr(e.message);
-      } finally {
-        setLoadingRoster(false);
-      }
-    })();
-  }, [token, me]);
-
-  const onLoggedIn = (userWithToken) => {
-    setMe(userWithToken);
-    setToken(userWithToken.token);
+  const loadAthletes = async () => {
+    if (!token) return;
+    const data = await apiFetch("/athletes", token);
+    setAthletes(Array.isArray(data) ? data : []);
   };
+
+  useEffect(() => {
+    if (!token) return;
+    loadAthletes().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
 
   const logout = async () => {
     try {
-      if (token) await apiFetch("/auth/logout", token, { method: "POST" }); // optional [1](https://github.com/orgs/community/discussions/151670)
+      if (token) await apiFetch("/auth/logout", token, { method: "POST" });
     } catch {}
     localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
+    setToken("");
     setMe(null);
     setAthletes([]);
     setSelected(null);
-    setView("overview");
   };
 
-  const createAthlete = async (form) => {
-    setCreating(true);
+  const requestDelete = (a) => {
+    setDeleteErr("");
+    setDeleteTarget(a);
+    setDeleteOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleteWorking(true);
+    setDeleteErr("");
     try {
-      const created = await apiFetch("/athletes", token, {
-        method: "POST",
-        body: JSON.stringify({
-          email: form.loginEmail.trim().toLowerCase(),
-          name: form.name.trim(),
-          password: form.password,
-          sport: form.sport,
-          mfpUsername: form.mfpUsername?.trim() || null,
-        }),
-      }); // backend supports POST /athletes [1](https://github.com/orgs/community/discussions/151670)
-
-      const mapped = {
-        id: created.id,
-        name: created.name,
-        email: created.email,
-        sport: created.sport || form.sport || "—",
-        avatar: initialsOf(created.name),
-        avatarColor: randomAvatarColor(),
-        macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
-      };
-
-      setAthletes((p) => [mapped, ...p].sort((a, b) => a.name.localeCompare(b.name)));
-      setShowAdd(false);
+      await apiFetch(`/athletes/${deleteTarget.id}`, token, { method: "DELETE" });
+      setDeleteOpen(false);
+      setDeleteTarget(null);
+      if (selected?.id === deleteTarget.id) setSelected(null);
+      await loadAthletes();
     } catch (e) {
-      alert(e.message);
+      setDeleteErr(e.message || "Could not delete athlete");
     } finally {
-      setCreating(false);
+      setDeleteWorking(false);
     }
   };
 
-  if (!me || !token) {
-    return <CoachLogin onLoggedIn={onLoggedIn} />;
-  }
-
-  // Basic coach-only guard
-  if (me.role !== "coach") {
+  if (!token) {
     return (
-      <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "DM Sans", padding: 30 }}>
-        <h2 style={{ fontFamily: "Bebas Neue, system-ui", letterSpacing: 2 }}>Access denied</h2>
-        <p style={{ color: T.muted, marginTop: 10 }}>
-          Your account role is <strong>{me.role}</strong>. This portal is for coaches only.
-        </p>
-        <button
-          onClick={logout}
-          style={{
-            marginTop: 16,
-            background: T.accent,
-            border: "none",
-            color: T.bg,
-            borderRadius: 10,
-            padding: "10px 16px",
-            fontFamily: "Bebas Neue, system-ui",
-            letterSpacing: 1.5,
-            cursor: "pointer",
-          }}
-          type="button"
-        >
-          LOG OUT
-        </button>
-      </div>
+      <Login
+        onLoggedIn={(t, user) => {
+          setToken(t);
+          setMe(user);
+        }}
+      />
     );
   }
 
   return (
-    <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "DM Sans" }}>
-      <style>{`
-        *{box-sizing:border-box}
-        @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-      `}</style>
-
-      {/* Top bar */}
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          zIndex: 50,
-          background: `${T.bg}f0`,
-          backdropFilter: "blur(8px)",
-          borderBottom: `1px solid ${T.border}`,
-        }}
-      >
-        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "14px 18px", display: "flex", alignItems: "center", gap: 12 }}>
-          <img src={LOGO_SRC} alt="NRN" style={{ width: 42, height: 42, borderRadius: "50%", border: `2px solid ${T.accent}44` }} />
-          <div style={{ flex: 1 }}>
-            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2 }}>NO RULES NUTRITION</div>
-            <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>
-              Coach: <span style={{ color: T.text, fontWeight: 600 }}>{me.name}</span> ·{" "}
-              <span style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>{me.email}</span>
-            </div>
+    <div style={{ minHeight: "100vh", background: T.bg, color: T.text, padding: 18 }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontFamily: "Bebas Neue", letterSpacing: 2, fontSize: 18 }}>NO RULES NUTRITION</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Coach Portal</div>
           </div>
-
-          <Badge label="COACH" color={T.coachGreen} />
-
-          <button
-            onClick={logout}
-            style={{
-              background: "none",
-              border: `1px solid ${T.border}`,
-              color: T.muted,
-              borderRadius: 10,
-              padding: "8px 12px",
-              cursor: "pointer",
-              fontFamily: "DM Sans",
-              fontSize: 12,
-            }}
-            type="button"
-          >
-            Log out
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => setAdding(true)} style={{ ...miniBtnStyle(false, T.accent), borderColor: `${T.accent}55`, color: T.accent }} type="button">+ Add Athlete</button>
+            <button onClick={logout} style={{ ...miniBtnStyle(false, T.danger), borderColor: `${T.danger}55`, color: T.danger }} type="button">Logout</button>
+          </div>
         </div>
-      </div>
 
-      {/* Main */}
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "18px" }}>
-        {view === "overview" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>
-                  CLIENT ROSTER
-                </div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
-                  Click an athlete to open their profile and macro plan.
-                </div>
-              </div>
+        <ConfirmDeleteModal open={deleteOpen} athlete={deleteTarget} onCancel={() => !deleteWorking && setDeleteOpen(false)} onConfirm={confirmDelete} working={deleteWorking} error={deleteErr} />
+        <AddAthleteModal open={adding} onClose={() => setAdding(false)} onCreated={() => loadAthletes()} token={token} />
 
-              <button
-                onClick={() => setShowAdd(true)}
-                style={{
-                  background: T.accent,
-                  color: T.bg,
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "10px 18px",
-                  fontFamily: "Bebas Neue, system-ui",
-                  fontSize: 14,
-                  letterSpacing: 1.5,
-                  cursor: "pointer",
-                }}
-                type="button"
-              >
-                + ADD ATHLETE
-              </button>
-            </div>
-
-            {rosterErr && (
-              <div
-                style={{
-                  background: `${T.danger}18`,
-                  border: `1px solid ${T.danger}44`,
-                  borderRadius: 12,
-                  padding: "12px 14px",
-                  color: T.danger,
-                  fontSize: 12,
-                }}
-              >
-                {rosterErr}
-              </div>
-            )}
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-              <StatCard label="TOTAL ATHLETES" value={athletes.length} color={T.accent} />
-              <StatCard label="API" value="CONNECTED" color={T.coachGreen} sub={API_BASE} />
-              <StatCard label="TOKEN" value={token ? "ACTIVE" : "—"} color={token ? T.coachGreen : T.warn} />
-              <StatCard label="STATUS" value={loadingRoster ? "LOADING…" : "READY"} color={loadingRoster ? T.warn : T.text} />
-            </div>
-
-            <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 20, overflow: "hidden" }}>
-              <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between" }}>
-                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2 }}>ATHLETES</div>
-                <Badge label={`${athletes.length} ATHLETES`} color={T.accent} />
-              </div>
-
-              {loadingRoster ? (
-                <div style={{ padding: 18, color: T.muted }}>Loading athletes…</div>
-              ) : athletes.length === 0 ? (
-                <div style={{ padding: 18, color: T.muted }}>
-                  No athletes found for this coach yet. Click <b>+ ADD ATHLETE</b> to create one.
-                </div>
-              ) : (
-                athletes.map((a, idx) => (
-                  <div
-                    key={a.id}
-                    onClick={() => {
-                      setSelected(a);
-                      setView("athlete");
-                    }}
-                    style={{
-                      padding: "14px 18px",
-                      borderBottom: idx < athletes.length - 1 ? `1px solid ${T.border}` : "none",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      cursor: "pointer",
-                      transition: "background .15s",
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = T.surface)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                  >
-                    <Avatar initials={a.avatar} color={a.avatarColor} size={40} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontWeight: 700 }}>{a.name}</span>
-                        <Badge label={a.sport || "ATHLETE"} color={T.coachGreen} />
-                      </div>
-                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 3 }}>
-                        {a.email}
-                      </div>
-                    </div>
-                    <div style={{ color: T.muted, fontSize: 12 }}>›</div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        )}
-
-        {view === "athlete" && selected && (
+        {selected ? (
           <AthleteDetail
             athlete={selected}
             token={token}
-            onBack={() => {
-              setView("overview");
-              setSelected(null);
-            }}
+            onBack={() => setSelected(null)}
+            onDelete={requestDelete}
           />
+        ) : (
+          <>
+            <OverviewDashboard token={token} days={overviewDays} setDays={setOverviewDays} onSelectAthlete={(a) => setSelected(athletes.find((x) => x.id === a.id) || a)} />
+
+            <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontFamily: "Bebas Neue", fontSize: 18, letterSpacing: 2 }}>ATHLETES</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Click a row to view details; use 🗑 to delete.</div>
+                </div>
+                <button onClick={loadAthletes} style={{ ...miniBtnStyle(false, T.info), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                {!athletes.length ? (
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>No athletes yet. Click “Add Athlete”.</div>
+                ) : (
+                  athletes.map((a, idx) => (
+                    <div
+                      key={a.id}
+                      onClick={() => setSelected(a)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "14px 18px",
+                        borderBottom: idx < athletes.length - 1 ? `1px solid ${T.border}` : "none",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontFamily: "Bebas Neue", letterSpacing: 1.5, fontSize: 16 }}>{(a.name || "Athlete").toUpperCase()}</div>
+                        <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{a.email}</div>
+                      </div>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>{a.sport || ""}</div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          requestDelete(a);
+                        }}
+                        title="Delete athlete"
+                        style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, color: T.danger, borderRadius: 10, padding: "6px 10px", cursor: "pointer", fontFamily: "DM Sans", fontSize: 12 }}
+                        type="button"
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </>
         )}
       </div>
-
-      {showAdd && (
-        <AddAthleteModal
-          onClose={() => setShowAdd(false)}
-          onCreate={createAthlete}
-          creating={creating}
-        />
-      )}
     </div>
   );
 }

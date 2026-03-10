@@ -937,8 +937,10 @@ function AthleteDetail({ athlete, token, onBack }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
-    { id: "targets", label: "TARGETS (CAL)" },
-    { id: "checkins", label: "CHECK-INS" },
+    { id: "targets", label: "CAL TARGETS" },
+    { id: "weight", label: "WEIGHT" },
+    { id: "mood", label: "MOOD" },
+    { id: "consumed", label: "CONSUMED" },
   ];
 
   return (
@@ -1169,201 +1171,153 @@ function AthleteDetail({ athlete, token, onBack }) {
 
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Calendar helpers + Targets + Check-ins (added)
+   Separate panels for Weight / Mood / Consumed
+   These are split out so each can fail independently and you can see data clearly.
 ───────────────────────────────────────────────────────────────────────────── */
-function isoDate(d) {
-  return new Date(d).toISOString().slice(0, 10);
-}
-
-function weekStartISO(offsetWeeks = 0) {
-  const now = new Date();
-  const day = now.getDay();
-  const diffToMon = (day === 0 ? -6 : 1) - day;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() + diffToMon + offsetWeeks * 7);
-  monday.setHours(0, 0, 0, 0);
-  return monday;
-}
-
-function dateForWeekDay(weekOffset, dayKey) {
-  const idx = DAYS.indexOf(dayKey);
-  const start = weekStartISO(weekOffset);
-  const d = new Date(start);
-  d.setDate(start.getDate() + (idx < 0 ? 0 : idx));
-  return isoDate(d);
-}
-
-function miniBtnStyle() {
-  return {
-    background: T.card,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    padding: "8px 10px",
-    color: T.muted,
-    cursor: "pointer",
-    fontFamily: "DM Sans",
-    fontSize: 12,
-  };
-}
-
-function thStyle() {
-  return {
-    textAlign: "left",
-    fontFamily: "Bebas Neue, system-ui",
-    letterSpacing: 1.5,
-    fontSize: 12,
-    color: T.muted,
-    padding: "10px 10px",
-    borderBottom: `1px solid ${T.border}`,
-  };
-}
-
-function tdStyle() {
-  return {
-    padding: "10px 10px",
-    borderBottom: `1px solid ${T.border}22`,
-    fontFamily: "DM Sans",
-    fontSize: 12,
-    color: T.text,
-    verticalAlign: "middle",
-  };
-}
-
-function cellInput() {
-  return {
-    width: 70,
-    background: T.surface,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    padding: "8px 10px",
-    color: T.text,
-    fontFamily: "JetBrains Mono",
-    fontSize: 12,
-    outline: "none",
-  };
-}
-
-function TargetsCalendar({ athleteId, token, defaults }) {
-  const [weekOffset, setWeekOffset] = useState(0);
-  const [rows, setRows] = useState({});
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
+function WeightPanel({ athleteId, token }) {
+  const [rangeDays, setRangeDays] = useState(30);
+  const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
 
-  const start = isoDate(weekStartISO(weekOffset));
-  const endD = new Date(weekStartISO(weekOffset));
-  endD.setDate(endD.getDate() + 6);
-  const end = isoDate(endD);
-
   const load = async () => {
-    if (!athleteId) return;
     setErr("");
     try {
-      const data = await apiFetch(`/macro-targets/${athleteId}?start=${start}&end=${end}`, token);
-      const map = {};
-      (data || []).forEach((r) => {
-        map[r.date] = {
-          calories: Number(r.calories || 0),
-          protein_g: Number(r.protein_g || 0),
-          carbs_g: Number(r.carbs_g || 0),
-          fat_g: Number(r.fat_g || 0),
-        };
-      });
-      for (const d of DAYS) {
-        const iso = dateForWeekDay(weekOffset, d);
-        if (!map[iso]) {
-          map[iso] = {
-            calories: defaults.calories,
-            protein_g: defaults.protein,
-            carbs_g: defaults.carbs,
-            fat_g: defaults.fat,
-          };
-        }
-      }
-      setRows(map);
+      const w = await apiFetch(`/weights/${athleteId}`, token);
+      setRows(Array.isArray(w) ? w : []);
     } catch (e) {
-      setErr(e.message || "Could not load targets");
+      setErr(e.message || "Could not load weights");
     }
   };
 
   useEffect(() => {
+    if (!athleteId) return;
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [athleteId, weekOffset]);
+  }, [athleteId]);
 
-  const setField = (date, key, val) => {
-    setRows((prev) => ({
-      ...prev,
-      [date]: { ...prev[date], [key]: clamp(Number(val), 0, 20000) },
-    }));
-  };
-
-  const save = async () => {
-    setSaving(true);
-    setErr("");
-    try {
-      const entries = Object.entries(rows).map(([date, v]) => ({
-        date,
-        calories: Number(v.calories || 0),
-        protein_g: Number(v.protein_g || 0),
-        carbs_g: Number(v.carbs_g || 0),
-        fat_g: Number(v.fat_g || 0),
-      }));
-      await apiFetch(`/macro-targets/${athleteId}`, token, {
-        method: "PUT",
-        body: JSON.stringify({ entries }),
-      });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1500);
-    } catch (e) {
-      setErr(e.message || "Could not save targets");
-    } finally {
-      setSaving(false);
-    }
-  };
+  // render date window
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (rangeDays - 1));
+  const start = isoDate(startD);
+  const dates = [];
+  for (let i = 0; i < rangeDays; i++) {
+    const d = new Date(startD.getTime() + i * 86400000);
+    dates.push(isoDate(d));
+  }
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CALENDAR TARGETS</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Set per-date macro targets (history kept).</div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEIGHT</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live weights by date.</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <button onClick={() => setWeekOffset((w) => w - 1)} style={miniBtnStyle()} type="button">◀</button>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
           <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
-          <button onClick={() => setWeekOffset((w) => Math.min(0, w + 1))} style={miniBtnStyle()} type="button">▶</button>
-          <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(), borderColor: `${T.accent}55`, color: T.accent }} type="button">{saving ? "SAVING…" : "SAVE"}</button>
         </div>
       </div>
 
-      {err ? (<div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>) : null}
-      {saved ? (<div style={{ marginTop: 12, background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 12, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 12 }}>✓ Saved</div>) : null}
+      {err ? (
+        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
+      ) : null}
 
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead>
             <tr>
-              <th style={thStyle()}>DAY</th>
               <th style={thStyle()}>DATE</th>
-              <th style={thStyle()}>CAL</th>
-              <th style={thStyle()}>P</th>
-              <th style={thStyle()}>C</th>
-              <th style={thStyle()}>F</th>
+              <th style={thStyle()}>KG</th>
             </tr>
           </thead>
           <tbody>
-            {DAYS.map((d) => {
-              const date = dateForWeekDay(weekOffset, d);
-              const v = rows[date] || { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+            {dates.slice().reverse().map((date) => (
+              <tr key={date}>
+                <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
+                <td style={tdStyle()}>{map[date] ? Number(map[date].kg).toFixed(1) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MoodPanel({ athleteId, token }) {
+  const [rangeDays, setRangeDays] = useState(30);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try {
+      const m = await apiFetch(`/moods/${athleteId}`, token);
+      setRows(Array.isArray(m) ? m : []);
+    } catch (e) {
+      setErr(e.message || "Could not load moods");
+    }
+  };
+
+  useEffect(() => {
+    if (!athleteId) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId]);
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (rangeDays - 1));
+  const start = isoDate(startD);
+  const dates = [];
+  for (let i = 0; i < rangeDays; i++) {
+    const d = new Date(startD.getTime() + i * 86400000);
+    dates.push(isoDate(d));
+  }
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MOOD</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live moods by date.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
+        </div>
+      </div>
+
+      {err ? (
+        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
+      ) : null}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr>
+              <th style={thStyle()}>DATE</th>
+              <th style={thStyle()}>MOOD</th>
+              <th style={thStyle()}>NOTE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dates.slice().reverse().map((date) => {
+              const r = map[date];
               return (
                 <tr key={date}>
-                  <td style={tdStyle()}>{d}</td>
                   <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
-                  <td style={tdStyle()}><input value={v.calories} onChange={(e) => setField(date, "calories", e.target.value)} style={cellInput()} /></td>
-                  <td style={tdStyle()}><input value={v.protein_g} onChange={(e) => setField(date, "protein_g", e.target.value)} style={cellInput()} /></td>
-                  <td style={tdStyle()}><input value={v.carbs_g} onChange={(e) => setField(date, "carbs_g", e.target.value)} style={cellInput()} /></td>
-                  <td style={tdStyle()}><input value={v.fat_g} onChange={(e) => setField(date, "fat_g", e.target.value)} style={cellInput()} /></td>
+                  <td style={tdStyle()}>{r ? `${r.emoji || ""} ${r.label || r.mood_id}` : "—"}</td>
+                  <td style={{ ...tdStyle(), color: T.muted }}>{r?.note || ""}</td>
                 </tr>
               );
             })}
@@ -1374,11 +1328,9 @@ function TargetsCalendar({ athleteId, token, defaults }) {
   );
 }
 
-function CheckinsPanel({ athleteId, token }) {
+function ConsumedPanel({ athleteId, token }) {
   const [rangeDays, setRangeDays] = useState(30);
-  const [weights, setWeights] = useState([]);
-  const [moods, setMoods] = useState([]);
-  const [totals, setTotals] = useState([]);
+  const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
 
   const end = isoDate(new Date());
@@ -1389,16 +1341,10 @@ function CheckinsPanel({ athleteId, token }) {
   const load = async () => {
     setErr("");
     try {
-      const [w, m, t] = await Promise.all([
-        apiFetch(`/weights/${athleteId}`, token),
-        apiFetch(`/moods/${athleteId}`, token),
-        apiFetch(`/daily-totals/${athleteId}?start=${start}&end=${end}`, token),
-      ]);
-      setWeights(Array.isArray(w) ? w : []);
-      setMoods(Array.isArray(m) ? m : []);
-      setTotals(Array.isArray(t) ? t : []);
+      const t = await apiFetch(`/daily-totals/${athleteId}?start=${start}&end=${end}`, token);
+      setRows(Array.isArray(t) ? t : []);
     } catch (e) {
-      setErr(e.message || "Could not load check-ins");
+      setErr(e.message || "Could not load daily totals");
     }
   };
 
@@ -1408,40 +1354,38 @@ function CheckinsPanel({ athleteId, token }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [athleteId, rangeDays]);
 
-  const moodMap = Object.fromEntries(moods.map((r) => [r.date, r]));
-  const weightMap = Object.fromEntries(weights.map((r) => [r.date, r]));
-  const totalMap = Object.fromEntries(totals.map((r) => [r.date, r]));
-
   const dates = [];
   for (let i = 0; i < rangeDays; i++) {
     const d = new Date(startD.getTime() + i * 86400000);
     dates.push(isoDate(d));
   }
+  const map = Object.fromEntries(rows.map((r) => [r.date, r]));
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>CHECK-INS & CONSUMPTION</div>
-          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Weight, mood, and macros consumed — by date.</div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MACROS CONSUMED</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Live daily totals by date (from client “Save Day”).</div>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {[7, 30, 90, 180].map((d) => (
             <button key={d} onClick={() => setRangeDays(d)} style={{ ...miniBtnStyle(), borderColor: rangeDays === d ? `${T.accent}66` : T.border, color: rangeDays === d ? T.accent : T.muted }} type="button">{d}d</button>
           ))}
           <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
         </div>
       </div>
 
-      {err ? (<div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>) : null}
+      {err ? (
+        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
+      ) : null}
 
       <div style={{ marginTop: 14, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
           <thead>
             <tr>
               <th style={thStyle()}>DATE</th>
-              <th style={thStyle()}>WEIGHT (KG)</th>
-              <th style={thStyle()}>MOOD</th>
               <th style={thStyle()}>CAL</th>
               <th style={thStyle()}>P</th>
               <th style={thStyle()}>C</th>
@@ -1451,19 +1395,15 @@ function CheckinsPanel({ athleteId, token }) {
           </thead>
           <tbody>
             {dates.slice().reverse().map((date) => {
-              const w = weightMap[date];
-              const m = moodMap[date];
-              const t = totalMap[date];
+              const r = map[date];
               return (
                 <tr key={date}>
                   <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
-                  <td style={tdStyle()}>{w ? Number(w.kg).toFixed(1) : "—"}</td>
-                  <td style={tdStyle()}>{m ? `${m.emoji || ""} ${m.label || m.mood_id}` : "—"}</td>
-                  <td style={tdStyle()}>{t ? t.calories : "—"}</td>
-                  <td style={tdStyle()}>{t ? t.protein_g : "—"}</td>
-                  <td style={tdStyle()}>{t ? t.carbs_g : "—"}</td>
-                  <td style={tdStyle()}>{t ? t.fat_g : "—"}</td>
-                  <td style={{ ...tdStyle(), color: T.muted }}>{t?.note || ""}</td>
+                  <td style={tdStyle()}>{r ? r.calories : "—"}</td>
+                  <td style={tdStyle()}>{r ? r.protein_g : "—"}</td>
+                  <td style={tdStyle()}>{r ? r.carbs_g : "—"}</td>
+                  <td style={tdStyle()}>{r ? r.fat_g : "—"}</td>
+                  <td style={{ ...tdStyle(), color: T.muted }}>{r?.note || ""}</td>
                 </tr>
               );
             })}

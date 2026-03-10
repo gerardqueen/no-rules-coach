@@ -560,38 +560,6 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
 
-  // Load current macro targets from saved macro plan (average of days)
-  useEffect(() => {
-    let ignore = false;
-    (async () => {
-      try {
-        const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
-        if (ignore) return;
-        const vals = (rows || []).filter(Boolean);
-        if (!vals.length) return;
-        const sum = vals.reduce((a, r) => ({
-          calories: a.calories + Number(r.calories || 0),
-          protein: a.protein + Number(r.protein_g || 0),
-          carbs: a.carbs + Number(r.carbs_g || 0),
-          fat: a.fat + Number(r.fat_g || 0),
-        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-        const n = Math.max(1, vals.length);
-        const avg = {
-          calories: Math.round(sum.calories / n),
-          protein: Math.round(sum.protein / n),
-          carbs: Math.round(sum.carbs / n),
-          fat: Math.round(sum.fat / n),
-        };
-        setInitialGoals(avg);
-        setGoals(avg);
-      } catch {
-        // ignore
-      }
-    })();
-    return () => { ignore = true; };
-  }, [athlete.id, token]);
-
-
   const emptyWeek = () =>
     DAYS.reduce((acc, d) => {
       acc[d] = {
@@ -900,43 +868,27 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
 function AthleteDetail({ athlete, token, onBack }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
-  const [initialGoals, setInitialGoals] = useState(() => ({
+  const [goals, setGoals] = useState(() => ({
     calories: athlete.macroGoals?.calories ?? 2500,
     protein: athlete.macroGoals?.protein ?? 180,
     carbs: athlete.macroGoals?.carbs ?? 280,
     fat: athlete.macroGoals?.fat ?? 75,
   }));
-  const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
 
-  const handleSaveTargets = async () => {
-    // Persist these targets by applying them to ALL days in the macro plan and saving to backend
-    try {
-      const payload = {
-        plans: DAYS.map((d) => ({
-          dayOfWeek: d,
-          calories: goals.calories,
-          protein_g: goals.protein,
-          carbs_g: goals.carbs,
-          fat_g: goals.fat,
-        })),
-      };
-      await apiFetch(`/macro-plans/${athlete.id}`, token, {
-        method: "PUT",
-        body: JSON.stringify(payload),
-      });
-      setInitialGoals(goals);
-      setEditing(false);
-      setSaved(true);
-      setTimeout(() => setSaved(false), 1800);
-    } catch (e) {
-      alert(e.message || "Could not save targets");
-    }
+  const handleSaveTargets = () => {
+    // Targets here are local UI "defaults" used for Populate All Days.
+    // If you want to persist these as well, add an endpoint and POST here.
+    setEditing(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 1800);
   };
 
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
+    { id: "targets", label: "TARGETS (CAL)" },
+    { id: "checkins", label: "CHECK-INS" },
   ];
 
   return (
@@ -1140,22 +1092,7 @@ function AthleteDetail({ athlete, token, onBack }) {
       )}
 
       {tab === "macroplan" && (
-        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
-        const tot = DAYS.reduce((a, d) => ({
-          calories: a.calories + Number(p[d].calories || 0),
-          protein: a.protein + Number(p[d].protein || 0),
-          carbs: a.carbs + Number(p[d].carbs || 0),
-          fat: a.fat + Number(p[d].fat || 0),
-        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-        const next = {
-          calories: Math.round(tot.calories / 7),
-          protein: Math.round(tot.protein / 7),
-          carbs: Math.round(tot.carbs / 7),
-          fat: Math.round(tot.fat / 7),
-        };
-        setInitialGoals(next);
-        setGoals(next);
-      }} />
+        <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} />
       )}
     </div>
   );
@@ -1164,6 +1101,356 @@ function AthleteDetail({ athlete, token, onBack }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Main Coach CMS
 ────────────────────────────────────────────────────────────────────────────── */
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Calendar helpers (coach)
+───────────────────────────────────────────────────────────────────────────── */
+function isoDate(d) {
+  return new Date(d).toISOString().slice(0, 10);
+}
+
+function weekStartISO(offsetWeeks = 0) {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun
+  const diffToMon = (day === 0 ? -6 : 1) - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + diffToMon + offsetWeeks * 7);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+function dateForWeekDay(weekOffset, dayKey) {
+  const idx = DAYS.indexOf(dayKey);
+  const start = weekStartISO(weekOffset);
+  const d = new Date(start);
+  d.setDate(start.getDate() + (idx < 0 ? 0 : idx));
+  return isoDate(d);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   TargetsCalendar — calendar-based macro targets (coach -> client)
+───────────────────────────────────────────────────────────────────────────── */
+function TargetsCalendar({ athleteId, token, defaults }) {
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [rows, setRows] = useState({}); // {date: {calories, protein_g, carbs_g, fat_g}}
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [err, setErr] = useState("");
+
+  const start = isoDate(weekStartISO(weekOffset));
+  const endD = new Date(weekStartISO(weekOffset));
+  endD.setDate(endD.getDate() + 6);
+  const end = isoDate(endD);
+
+  const load = async () => {
+    if (!athleteId) return;
+    setErr("");
+    try {
+      const data = await apiFetch(`/macro-targets/${athleteId}?start=${start}&end=${end}`, token);
+      const map = {};
+      (data || []).forEach((r) => {
+        map[r.date] = {
+          calories: Number(r.calories || 0),
+          protein_g: Number(r.protein_g || 0),
+          carbs_g: Number(r.carbs_g || 0),
+          fat_g: Number(r.fat_g || 0),
+        };
+      });
+      // Pre-fill missing days with defaults
+      for (const d of DAYS) {
+        const iso = dateForWeekDay(weekOffset, d);
+        if (!map[iso]) {
+          map[iso] = {
+            calories: defaults.calories,
+            protein_g: defaults.protein,
+            carbs_g: defaults.carbs,
+            fat_g: defaults.fat,
+          };
+        }
+      }
+      setRows(map);
+    } catch (e) {
+      setErr(e.message || "Could not load targets");
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId, weekOffset]);
+
+  const setField = (date, key, val) => {
+    setRows((prev) => ({
+      ...prev,
+      [date]: { ...prev[date], [key]: clamp(Number(val), 0, 20000) },
+    }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const entries = Object.entries(rows).map(([date, v]) => ({
+        date,
+        calories: Number(v.calories || 0),
+        protein_g: Number(v.protein_g || 0),
+        carbs_g: Number(v.carbs_g || 0),
+        fat_g: Number(v.fat_g || 0),
+      }));
+      await apiFetch(`/macro-targets/${athleteId}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ entries }),
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      setErr(e.message || "Could not save targets");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
+            CALENDAR TARGETS
+          </div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
+            Set per-date macro targets (history kept).
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button onClick={() => setWeekOffset((w) => w - 1)} style={miniBtnStyle()} type="button">◀</button>
+          <div style={{ fontFamily: "JetBrains Mono", fontSize: 11, color: T.muted }}>{start} → {end}</div>
+          <button onClick={() => setWeekOffset((w) => Math.min(0, w + 1))} style={miniBtnStyle()} type="button">▶</button>
+          <button onClick={save} disabled={saving} style={{ ...miniBtnStyle(), borderColor: `${T.accent}55`, color: T.accent }} type="button">
+            {saving ? "SAVING…" : "SAVE"}
+          </button>
+        </div>
+      </div>
+
+      {err ? (
+        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>
+          {err}
+        </div>
+      ) : null}
+      {saved ? (
+        <div style={{ marginTop: 12, background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 12, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 12 }}>
+          ✓ Saved
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr>
+              <th style={thStyle()}>DAY</th>
+              <th style={thStyle()}>DATE</th>
+              <th style={thStyle()}>CAL</th>
+              <th style={thStyle()}>P</th>
+              <th style={thStyle()}>C</th>
+              <th style={thStyle()}>F</th>
+            </tr>
+          </thead>
+          <tbody>
+            {DAYS.map((d) => {
+              const date = dateForWeekDay(weekOffset, d);
+              const v = rows[date] || { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+              return (
+                <tr key={date}>
+                  <td style={tdStyle()}>{d}</td>
+                  <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
+                  <td style={tdStyle()}><input value={v.calories} onChange={(e) => setField(date, "calories", e.target.value)} style={cellInput()} /></td>
+                  <td style={tdStyle()}><input value={v.protein_g} onChange={(e) => setField(date, "protein_g", e.target.value)} style={cellInput()} /></td>
+                  <td style={tdStyle()}><input value={v.carbs_g} onChange={(e) => setField(date, "carbs_g", e.target.value)} style={cellInput()} /></td>
+                  <td style={tdStyle()}><input value={v.fat_g} onChange={(e) => setField(date, "fat_g", e.target.value)} style={cellInput()} /></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function miniBtnStyle() {
+  return {
+    background: T.card,
+    border: `1px solid ${T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: T.muted,
+    cursor: "pointer",
+    fontFamily: "DM Sans",
+    fontSize: 12,
+  };
+}
+
+function thStyle() {
+  return {
+    textAlign: "left",
+    fontFamily: "Bebas Neue, system-ui",
+    letterSpacing: 1.5,
+    fontSize: 12,
+    color: T.muted,
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}`,
+  };
+}
+
+function tdStyle() {
+  return {
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}22`,
+    fontFamily: "DM Sans",
+    fontSize: 12,
+    color: T.text,
+    verticalAlign: "middle",
+  };
+}
+
+function cellInput() {
+  return {
+    width: 70,
+    background: T.surface,
+    border: `1px solid ${T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: T.text,
+    fontFamily: "JetBrains Mono",
+    fontSize: 12,
+    outline: "none",
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   CheckinsPanel — weight, mood, and macros consumed (daily totals)
+───────────────────────────────────────────────────────────────────────────── */
+function CheckinsPanel({ athleteId, token }) {
+  const [rangeDays, setRangeDays] = useState(30);
+  const [weights, setWeights] = useState([]);
+  const [moods, setMoods] = useState([]);
+  const [totals, setTotals] = useState([]);
+  const [err, setErr] = useState("");
+
+  const end = isoDate(new Date());
+  const startD = new Date();
+  startD.setDate(startD.getDate() - (rangeDays - 1));
+  const start = isoDate(startD);
+
+  const load = async () => {
+    setErr("");
+    try {
+      const [w, m, t] = await Promise.all([
+        apiFetch(`/weights/${athleteId}`, token),
+        apiFetch(`/moods/${athleteId}`, token),
+        apiFetch(`/daily-totals/${athleteId}?start=${start}&end=${end}`, token),
+      ]);
+      setWeights(Array.isArray(w) ? w : []);
+      setMoods(Array.isArray(m) ? m : []);
+      setTotals(Array.isArray(t) ? t : []);
+    } catch (e) {
+      setErr(e.message || "Could not load check-ins");
+    }
+  };
+
+  useEffect(() => {
+    if (!athleteId) return;
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [athleteId, rangeDays]);
+
+  const moodMap = Object.fromEntries(moods.map((r) => [r.date, r]));
+  const weightMap = Object.fromEntries(weights.map((r) => [r.date, r]));
+  const totalMap = Object.fromEntries(totals.map((r) => [r.date, r]));
+
+  // build date list for the range
+  const dates = [];
+  for (let i = 0; i < rangeDays; i++) {
+    const d = new Date(startD.getTime() + i * 86400000);
+    dates.push(isoDate(d));
+  }
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
+            CHECK-INS & CONSUMPTION
+          </div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
+            Weight, mood, and macros consumed — by date.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {[7, 30, 90, 180].map((d) => (
+            <button
+              key={d}
+              onClick={() => setRangeDays(d)}
+              style={{
+                ...miniBtnStyle(),
+                borderColor: rangeDays === d ? `${T.accent}66` : T.border,
+                color: rangeDays === d ? T.accent : T.muted,
+              }}
+              type="button"
+            >
+              {d}d
+            </button>
+          ))}
+          <button onClick={load} style={{ ...miniBtnStyle(), borderColor: `${T.info}55`, color: T.info }} type="button">Refresh</button>
+        </div>
+      </div>
+
+      {err ? (
+        <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>
+          {err}
+        </div>
+      ) : null}
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <thead>
+            <tr>
+              <th style={thStyle()}>DATE</th>
+              <th style={thStyle()}>WEIGHT (KG)</th>
+              <th style={thStyle()}>MOOD</th>
+              <th style={thStyle()}>CAL</th>
+              <th style={thStyle()}>P</th>
+              <th style={thStyle()}>C</th>
+              <th style={thStyle()}>F</th>
+              <th style={thStyle()}>NOTE</th>
+            </tr>
+          </thead>
+          <tbody>
+            {dates.slice().reverse().map((date) => {
+              const w = weightMap[date];
+              const m = moodMap[date];
+              const t = totalMap[date];
+              return (
+                <tr key={date}>
+                  <td style={{ ...tdStyle(), fontFamily: "JetBrains Mono" }}>{date}</td>
+                  <td style={tdStyle()}>{w ? Number(w.kg).toFixed(1) : "—"}</td>
+                  <td style={tdStyle()}>{m ? `${m.emoji || ""} ${m.label || m.mood_id}` : "—"}</td>
+                  <td style={tdStyle()}>{t ? t.calories : "—"}</td>
+                  <td style={tdStyle()}>{t ? t.protein_g : "—"}</td>
+                  <td style={tdStyle()}>{t ? t.carbs_g : "—"}</td>
+                  <td style={tdStyle()}>{t ? t.fat_g : "—"}</td>
+                  <td style={{ ...tdStyle(), color: T.muted }}>{t?.note || ""}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
 export default function CoachCMS() {
   const [me, setMe] = useState(null); // { id, email, name, role, token }
   const [token, setToken] = useState(null);

@@ -1128,12 +1128,63 @@ function dateForWeekDay(weekOffset, dayKey) {
   return isoDate(d);
 }
 
+function miniBtnStyle() {
+  return {
+    background: T.card,
+    border: `1px solid ${T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: T.muted,
+    cursor: "pointer",
+    fontFamily: "DM Sans",
+    fontSize: 12,
+  };
+}
+
+function thStyle() {
+  return {
+    textAlign: "left",
+    fontFamily: "Bebas Neue, system-ui",
+    letterSpacing: 1.5,
+    fontSize: 12,
+    color: T.muted,
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}`,
+  };
+}
+
+function tdStyle() {
+  return {
+    padding: "10px 10px",
+    borderBottom: `1px solid ${T.border}22`,
+    fontFamily: "DM Sans",
+    fontSize: 12,
+    color: T.text,
+    verticalAlign: "middle",
+  };
+}
+
+function cellInput() {
+  return {
+    width: 70,
+    background: T.surface,
+    border: `1px solid ${T.border}`,
+    borderRadius: 10,
+    padding: "8px 10px",
+    color: T.text,
+    fontFamily: "JetBrains Mono",
+    fontSize: 12,
+    outline: "none",
+  };
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    TargetsCalendar — calendar-based macro targets (coach -> client)
+   Uses backend: GET/PUT /macro-targets/:athleteId
 ───────────────────────────────────────────────────────────────────────────── */
 function TargetsCalendar({ athleteId, token, defaults }) {
   const [weekOffset, setWeekOffset] = useState(0);
-  const [rows, setRows] = useState({}); // {date: {calories, protein_g, carbs_g, fat_g}}
+  const [rows, setRows] = useState({});
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [err, setErr] = useState("");
@@ -1157,7 +1208,6 @@ function TargetsCalendar({ athleteId, token, defaults }) {
           fat_g: Number(r.fat_g || 0),
         };
       });
-      // Pre-fill missing days with defaults
       for (const d of DAYS) {
         const iso = dateForWeekDay(weekOffset, d);
         if (!map[iso]) {
@@ -1277,58 +1327,8 @@ function TargetsCalendar({ athleteId, token, defaults }) {
   );
 }
 
-function miniBtnStyle() {
-  return {
-    background: T.card,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    padding: "8px 10px",
-    color: T.muted,
-    cursor: "pointer",
-    fontFamily: "DM Sans",
-    fontSize: 12,
-  };
-}
-
-function thStyle() {
-  return {
-    textAlign: "left",
-    fontFamily: "Bebas Neue, system-ui",
-    letterSpacing: 1.5,
-    fontSize: 12,
-    color: T.muted,
-    padding: "10px 10px",
-    borderBottom: `1px solid ${T.border}`,
-  };
-}
-
-function tdStyle() {
-  return {
-    padding: "10px 10px",
-    borderBottom: `1px solid ${T.border}22`,
-    fontFamily: "DM Sans",
-    fontSize: 12,
-    color: T.text,
-    verticalAlign: "middle",
-  };
-}
-
-function cellInput() {
-  return {
-    width: 70,
-    background: T.surface,
-    border: `1px solid ${T.border}`,
-    borderRadius: 10,
-    padding: "8px 10px",
-    color: T.text,
-    fontFamily: "JetBrains Mono",
-    fontSize: 12,
-    outline: "none",
-  };
-}
-
 /* ─────────────────────────────────────────────────────────────────────────────
-   CheckinsPanel — weight, mood, and macros consumed (daily totals)
+   CheckinsPanel — weight, mood, macros consumed (daily totals)
 ───────────────────────────────────────────────────────────────────────────── */
 function CheckinsPanel({ athleteId, token }) {
   const [rangeDays, setRangeDays] = useState(30);
@@ -1368,7 +1368,6 @@ function CheckinsPanel({ athleteId, token }) {
   const weightMap = Object.fromEntries(weights.map((r) => [r.date, r]));
   const totalMap = Object.fromEntries(totals.map((r) => [r.date, r]));
 
-  // build date list for the range
   const dates = [];
   for (let i = 0; i < rangeDays; i++) {
     const d = new Date(startD.getTime() + i * 86400000);

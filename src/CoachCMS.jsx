@@ -1727,13 +1727,154 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Main Coach CMS
 ────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Admin Panel — manage coaches (admin only)
+────────────────────────────────────────────────────────────────────────────── */
+function AdminPanel({ token, myId }) {
+  const [coaches, setCoaches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ name: "", email: "", password: "", role: "coach" });
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState("");
+
+  const loadCoaches = async () => {
+    try {
+      const rows = await apiFetch("/admin/coaches", token);
+      setCoaches(Array.isArray(rows) ? rows : []);
+    } catch (e) { setErr(e.message); }
+    setLoading(false);
+  };
+
+  useEffect(() => { if (token) loadCoaches(); }, [token]);
+
+  const createCoach = async () => {
+    if (!form.name.trim() || !form.email.trim() || !form.password.trim() || form.password.length < 6) return;
+    setCreating(true); setErr("");
+    try {
+      await apiFetch("/admin/coaches", token, {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name.trim(),
+          email: form.email.trim().toLowerCase(),
+          password: form.password,
+          role: form.role,
+        }),
+      });
+      setForm({ name: "", email: "", password: "", role: "coach" });
+      setShowAdd(false);
+      await loadCoaches();
+    } catch (e) { setErr(e.message); }
+    setCreating(false);
+  };
+
+  const deleteCoach = async (id) => {
+    if (!confirm("Are you sure you want to remove this coach? Their athletes will be unassigned.")) return;
+    try {
+      await apiFetch(`/admin/coaches/${id}`, token, { method: "DELETE" });
+      await loadCoaches();
+    } catch (e) { alert(e.message); }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .2s ease" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>COACH MANAGEMENT</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
+            Add or remove coaches. Removing a coach unassigns their athletes.
+          </div>
+        </div>
+        <button onClick={() => setShowAdd(!showAdd)} style={{
+          background: T.accent, color: T.bg, border: "none", borderRadius: 10, padding: "10px 18px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: "pointer",
+        }} type="button">{showAdd ? "CANCEL" : "+ ADD COACH"}</button>
+      </div>
+
+      {err && (
+        <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 12, padding: "12px 14px", color: T.danger, fontSize: 12 }}>{err}</div>
+      )}
+
+      {showAdd && (
+        <div style={{ background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 16, padding: 20 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text, marginBottom: 14 }}>NEW COACH ACCOUNT</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Full Name *</label>
+              <input value={form.name} onChange={(e) => setForm(p => ({...p, name: e.target.value}))} placeholder="Coach name" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Email *</label>
+              <input value={form.email} onChange={(e) => setForm(p => ({...p, email: e.target.value}))} placeholder="coach@norules.com" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Password * (min 6)</label>
+              <input value={form.password} onChange={(e) => setForm(p => ({...p, password: e.target.value}))} placeholder="Password" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Role</label>
+              <select value={form.role} onChange={(e) => setForm(p => ({...p, role: e.target.value}))} style={{ ...inputStyle, cursor: "pointer" }}>
+                <option value="coach" style={{ background: T.bg }}>Coach</option>
+                <option value="admin" style={{ background: T.bg }}>Admin</option>
+              </select>
+            </div>
+          </div>
+          <button onClick={createCoach} disabled={creating || !form.name.trim() || !form.email.trim() || form.password.length < 6}
+            style={{
+              marginTop: 14, background: T.accent, color: T.bg, border: "none", borderRadius: 10, padding: "10px 18px",
+              fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
+              cursor: creating ? "default" : "pointer", opacity: creating ? 0.6 : 1,
+            }} type="button">{creating ? "CREATING…" : "CREATE COACH"}</button>
+        </div>
+      )}
+
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 20, overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between" }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2 }}>ALL COACHES</div>
+          <Badge label={`${coaches.length} COACHES`} color={T.coachGreen} />
+        </div>
+        {loading ? (
+          <div style={{ padding: 18, color: T.muted }}>Loading coaches…</div>
+        ) : coaches.length === 0 ? (
+          <div style={{ padding: 18, color: T.muted }}>No coaches found.</div>
+        ) : (
+          coaches.map((c, idx) => (
+            <div key={c.id} style={{
+              padding: "14px 18px", borderBottom: idx < coaches.length - 1 ? `1px solid ${T.border}` : "none",
+              display: "flex", alignItems: "center", gap: 12,
+            }}>
+              <Avatar initials={initialsOf(c.name)} color={c.role === "admin" ? T.accent : T.coachGreen} size={40} />
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontWeight: 700, color: T.text }}>{c.name}</span>
+                  <Badge label={c.role.toUpperCase()} color={c.role === "admin" ? T.accent : T.coachGreen} />
+                </div>
+                <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>{c.email}</div>
+              </div>
+              {c.id !== myId && (
+                <button onClick={() => deleteCoach(c.id)} style={{
+                  background: "none", border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "6px 12px",
+                  color: T.danger, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer",
+                }} type="button">Remove</button>
+              )}
+              {c.id === myId && (
+                <span style={{ fontSize: 10, color: T.muted, fontStyle: "italic" }}>You</span>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CoachCMS() {
   const [me, setMe] = useState(null); // { id, email, name, role, token }
   const [token, setToken] = useState(null);
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [rosterErr, setRosterErr] = useState("");
   const [athletes, setAthletes] = useState([]);
-  const [view, setView] = useState("overview"); // overview | athlete
+  const [view, setView] = useState("overview"); // overview | athlete | admin
   const [selected, setSelected] = useState(null);
 
   const [showAdd, setShowAdd] = useState(false);
@@ -1770,7 +1911,7 @@ export default function CoachCMS() {
   // Load roster after login
   useEffect(() => {
     if (!token || !me) return;
-    if (me.role !== "coach") return;
+    if (me.role !== "coach" && me.role !== "admin") return;
 
     setRosterErr("");
     setLoadingRoster(true);
@@ -1850,8 +1991,8 @@ export default function CoachCMS() {
     return <CoachLogin onLoggedIn={onLoggedIn} />;
   }
 
-  // Basic coach-only guard
-  if (me.role !== "coach") {
+  // Basic coach/admin guard
+  if (me.role !== "coach" && me.role !== "admin") {
     return (
       <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "DM Sans", padding: 30 }}>
         <h2 style={{ fontFamily: "Bebas Neue, system-ui", letterSpacing: 2 }}>Access denied</h2>
@@ -1908,7 +2049,23 @@ export default function CoachCMS() {
             </div>
           </div>
 
-          <Badge label="COACH" color={T.coachGreen} />
+          <Badge label={me.role === "admin" ? "ADMIN" : "COACH"} color={me.role === "admin" ? T.accent : T.coachGreen} />
+
+          {me.role === "admin" && (
+            <button
+              onClick={() => setView(view === "admin" ? "overview" : "admin")}
+              style={{
+                background: view === "admin" ? `${T.accent}22` : "none",
+                border: `1px solid ${view === "admin" ? T.accent + "55" : T.border}`,
+                color: view === "admin" ? T.accent : T.muted,
+                borderRadius: 10, padding: "8px 12px", cursor: "pointer",
+                fontFamily: "DM Sans", fontSize: 12,
+              }}
+              type="button"
+            >
+              {view === "admin" ? "← Clients" : "⚙ Manage Coaches"}
+            </button>
+          )}
 
           <button
             onClick={logout}
@@ -2048,6 +2205,10 @@ export default function CoachCMS() {
               setSelected(null);
             }}
           />
+        )}
+
+        {view === "admin" && me.role === "admin" && (
+          <AdminPanel token={token} myId={me.id} />
         )}
       </div>
 

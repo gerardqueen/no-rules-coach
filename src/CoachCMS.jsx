@@ -913,10 +913,10 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
       const today = new Date();
       const start = new Date(today); start.setDate(today.getDate() - range);
       const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      const [logs, totals] = await Promise.all([
-        apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token),
-        apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token),
-      ]);
+      // Fetch both independently so one failing doesn't break the other
+      let logs = [], totals = [];
+      try { logs = await apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+      try { totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
       setFoodLogs(Array.isArray(logs) ? logs : []);
       setDailyTotals(Array.isArray(totals) ? totals : []);
     } catch { setFoodLogs([]); setDailyTotals([]); }
@@ -925,23 +925,42 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
 
   useEffect(() => { setLoading(true); load(); }, [athleteId, token, range]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 15s
   useEffect(() => {
     if (!athleteId || !token) return;
-    const interval = setInterval(load, 30 * 1000);
+    const interval = setInterval(load, 15 * 1000);
     return () => clearInterval(interval);
   }, [athleteId, token, range]);
 
-  // Merge daily totals for chart
-  const calTarget = macroTarget?.calories || 2000;
-  const sorted = [...dailyTotals].sort((a, b) => a.date.localeCompare(b.date));
-  const barMax = Math.max(calTarget, ...sorted.map(d => Number(d.calories || 0))) * 1.1;
-
-  const rangeOptions = [{ v: 7, l: "7D" }, { v: 14, l: "14D" }, { v: 30, l: "30D" }];
-
-  // Map food logs by date for expansion
+  // Build merged data: prefer daily_totals, fallback to computing from food items
   const foodsByDate = {};
   foodLogs.forEach(dl => { foodsByDate[dl.date] = dl.foods || []; });
+
+  const totalsMap = {};
+  dailyTotals.forEach(d => { totalsMap[d.date] = d; });
+
+  // Merge all dates that have either food logs or daily totals
+  const allDates = new Set([
+    ...Object.keys(foodsByDate),
+    ...Object.keys(totalsMap),
+  ]);
+
+  // Build unified day data sorted by date
+  const dayData = [...allDates].sort().map(date => {
+    const foods = foodsByDate[date] || [];
+    const dt = totalsMap[date];
+    // Compute from food items if daily totals missing
+    const cal = dt ? Number(dt.calories || 0) : foods.reduce((s, f) => s + Number(f.calories || 0), 0);
+    const p = dt ? Number(dt.protein_g || 0) : foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0);
+    const c = dt ? Number(dt.carbs_g || 0) : foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0);
+    const f = dt ? Number(dt.fat_g || 0) : foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0);
+    return { date, calories: Math.round(cal), protein: Math.round(p), carbs: Math.round(c), fat: Math.round(f), foods };
+  });
+
+  const calTarget = macroTarget?.calories || 2000;
+  const barMax = Math.max(calTarget, ...dayData.map(d => d.calories)) * 1.1 || calTarget * 1.1;
+
+  const rangeOptions = [{ v: 7, l: "7D" }, { v: 14, l: "14D" }, { v: 30, l: "30D" }];
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
@@ -949,7 +968,7 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
         <div>
           <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>FOOD LOG</div>
           <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 2 }}>
-            Auto-refreshes every 30s · Click a day to expand items
+            Auto-refreshes every 15s · Click a day to expand items
           </div>
         </div>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
@@ -966,35 +985,31 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
         </div>
       </div>
 
-      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : sorted.length === 0 ? (
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : dayData.length === 0 ? (
         <div style={{ color: T.muted, fontSize: 12 }}>No food logged in this period.</div>
       ) : (
         <>
           {/* Daily calorie bar chart */}
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 100 }}>
-              {sorted.map((d) => {
-                const cal = Number(d.calories || 0);
-                const pct = (cal / barMax) * 100;
-                const over = cal > calTarget;
+              {dayData.map((d) => {
+                const pct = (d.calories / barMax) * 100;
+                const over = d.calories > calTarget;
                 const targetPct = (calTarget / barMax) * 100;
                 const isExpanded = expandedDay === d.date;
                 return (
                   <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
                     onClick={() => setExpandedDay(isExpanded ? null : d.date)}>
                     <div style={{ fontSize: 8, fontFamily: "JetBrains Mono, ui-monospace", color: T.muted, marginBottom: 2 }}>
-                      {cal > 0 ? cal : ""}
+                      {d.calories > 0 ? d.calories : ""}
                     </div>
                     <div style={{ width: "100%", position: "relative", height: 70 }}>
-                      {/* Target line */}
                       <div style={{ position: "absolute", bottom: `${targetPct * 0.7}%`, left: 0, right: 0, height: 1, background: `${T.coachGreen}66`, zIndex: 2 }} />
-                      {/* Bar */}
                       <div style={{
                         position: "absolute", bottom: 0, left: "10%", right: "10%",
                         height: `${Math.max(pct * 0.7, 2)}%`,
                         background: over ? `${T.danger}cc` : isExpanded ? T.accent : `${T.accent}88`,
-                        borderRadius: "3px 3px 0 0",
-                        transition: "all .2s",
+                        borderRadius: "3px 3px 0 0", transition: "all .2s",
                       }} />
                     </div>
                     <div style={{ fontSize: 7, fontFamily: "JetBrains Mono, ui-monospace", color: isExpanded ? T.accent : T.muted, marginTop: 2 }}>
@@ -1016,31 +1031,26 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
           {expandedDay && (
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 12, animation: "fadeUp .15s ease" }}>
               <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, color: T.accent, marginBottom: 8 }}>{expandedDay}</div>
-              {(foodsByDate[expandedDay] || []).length === 0 ? (
-                <div style={{ fontSize: 11, color: T.muted }}>No individual food items recorded for this day.</div>
-              ) : (
-                <>
-                  {(() => {
-                    const foods = foodsByDate[expandedDay];
-                    const totP = foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0);
-                    const totC = foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0);
-                    const totF = foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0);
-                    return (
-                      <div style={{ fontSize: 10, color: T.muted, marginBottom: 8, fontFamily: "JetBrains Mono, ui-monospace" }}>
-                        P: {Math.round(totP)}g · C: {Math.round(totC)}g · F: {Math.round(totF)}g
-                      </div>
-                    );
-                  })()}
-                  {(foodsByDate[expandedDay]).map((f, j) => (
-                    <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${T.border}20`, fontSize: 11 }}>
-                      <span style={{ color: T.text }}>{f.name} {f.meal ? <span style={{ color: T.muted, fontSize: 9 }}>({f.meal})</span> : ""}</span>
-                      <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
-                        {f.calories || 0} · {Math.round(Number(f.protein_g || f.protein || 0))}p · {Math.round(Number(f.carbs_g || f.carbs || 0))}c · {Math.round(Number(f.fat_g || f.fat || 0))}f
-                      </span>
+              {(() => {
+                const dd = dayData.find(d => d.date === expandedDay);
+                const foods = dd?.foods || [];
+                if (foods.length === 0) return <div style={{ fontSize: 11, color: T.muted }}>No individual food items recorded.</div>;
+                return (
+                  <>
+                    <div style={{ fontSize: 10, color: T.muted, marginBottom: 8, fontFamily: "JetBrains Mono, ui-monospace" }}>
+                      {dd.calories} cal · P: {dd.protein}g · C: {dd.carbs}g · F: {dd.fat}g
                     </div>
-                  ))}
-                </>
-              )}
+                    {foods.map((f, j) => (
+                      <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${T.border}20`, fontSize: 11 }}>
+                        <span style={{ color: T.text }}>{f.name} {f.meal ? <span style={{ color: T.muted, fontSize: 9 }}>({f.meal})</span> : ""}</span>
+                        <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
+                          {Math.round(f.calories || 0)} · {Math.round(Number(f.protein_g || f.protein || 0))}p · {Math.round(Number(f.carbs_g || f.carbs || 0))}c · {Math.round(Number(f.fat_g || f.fat || 0))}f
+                        </span>
+                      </div>
+                    ))}
+                  </>
+                );
+              })()}
             </div>
           )}
         </>
@@ -1150,68 +1160,71 @@ function WeeklyAdherenceView({ athleteId, token }) {
   const [actuals, setActuals] = useState({}); // { '2025-03-10': {cal,p,c,f}, ... }
   const [loading, setLoading] = useState(true);
 
+  const loadData = async (ignore) => {
+    try {
+      // Get macro plans (targets per day of week)
+      const plans = await apiFetch(`/macro-plans/${athleteId}`, token);
+      const byDay = {};
+      (Array.isArray(plans) ? plans : []).forEach(r => {
+        byDay[r.day_of_week] = {
+          calories: Math.round(Number(r.calories || 0)),
+          protein: Math.round(Number(r.protein_g || 0)),
+          carbs: Math.round(Number(r.carbs_g || 0)),
+          fat: Math.round(Number(r.fat_g || 0)),
+        };
+      });
+      if (!ignore?.current) setTargets(byDay);
+
+      // Get daily totals + food logs for last 7 days
+      const today = new Date();
+      const start = new Date(today); start.setDate(today.getDate() - 6);
+      const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+      let totals = [], foodLogs = [];
+      try { totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+      try { foodLogs = await apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+
+      const byDate = {};
+      // First, index daily totals
+      (Array.isArray(totals) ? totals : []).forEach(r => {
+        byDate[r.date] = {
+          calories: Math.round(Number(r.calories || 0)),
+          protein: Math.round(Number(r.protein_g || 0)),
+          carbs: Math.round(Number(r.carbs_g || 0)),
+          fat: Math.round(Number(r.fat_g || 0)),
+        };
+      });
+      // Then, fill in from food logs if daily totals missing for a date
+      (Array.isArray(foodLogs) ? foodLogs : []).forEach(fl => {
+        if (byDate[fl.date]) return; // already have totals
+        const foods = fl.foods || [];
+        if (foods.length === 0) return;
+        byDate[fl.date] = {
+          calories: Math.round(foods.reduce((s, f) => s + Number(f.calories || 0), 0)),
+          protein: Math.round(foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0)),
+          carbs: Math.round(foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0)),
+          fat: Math.round(foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0)),
+        };
+      });
+      if (!ignore?.current) setActuals(byDate);
+    } catch {}
+  };
+
   useEffect(() => {
     if (!athleteId || !token) return;
-    let ignore = false;
+    const ignore = { current: false };
     (async () => {
       setLoading(true);
-      try {
-        // Get macro plans (targets per day of week)
-        const plans = await apiFetch(`/macro-plans/${athleteId}`, token);
-        const byDay = {};
-        (Array.isArray(plans) ? plans : []).forEach(r => {
-          byDay[r.day_of_week] = {
-            calories: Number(r.calories || 0),
-            protein: Number(r.protein_g || 0),
-            carbs: Number(r.carbs_g || 0),
-            fat: Number(r.fat_g || 0),
-          };
-        });
-        if (!ignore) setTargets(byDay);
-
-        // Get daily totals for last 7 days
-        const today = new Date();
-        const start = new Date(today); start.setDate(today.getDate() - 6);
-        const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        const totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token);
-        const byDate = {};
-        (Array.isArray(totals) ? totals : []).forEach(r => {
-          byDate[r.date] = {
-            calories: Number(r.calories || 0),
-            protein: Number(r.protein_g || 0),
-            carbs: Number(r.carbs_g || 0),
-            fat: Number(r.fat_g || 0),
-          };
-        });
-        if (!ignore) setActuals(byDate);
-      } catch {}
-      if (!ignore) setLoading(false);
+      await loadData(ignore);
+      setLoading(false);
     })();
-    return () => { ignore = true; };
+    return () => { ignore.current = true; };
   }, [athleteId, token]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 15s
   useEffect(() => {
     if (!athleteId || !token) return;
-    const refresh = async () => {
-      try {
-        const today = new Date();
-        const start = new Date(today); start.setDate(today.getDate() - 6);
-        const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        const totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token);
-        const byDate = {};
-        (Array.isArray(totals) ? totals : []).forEach(r => {
-          byDate[r.date] = {
-            calories: Number(r.calories || 0),
-            protein: Number(r.protein_g || 0),
-            carbs: Number(r.carbs_g || 0),
-            fat: Number(r.fat_g || 0),
-          };
-        });
-        setActuals(byDate);
-      } catch {}
-    };
-    const interval = setInterval(refresh, 30 * 1000);
+    const interval = setInterval(() => loadData(), 15 * 1000);
     return () => clearInterval(interval);
   }, [athleteId, token]);
 

@@ -1388,21 +1388,23 @@ function CoachMessaging({ athleteId, athleteName, token }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [errCount, setErrCount] = useState(0);
   const bottomRef = useRef(null);
 
   const load = async () => {
     try {
       const msgs = await apiFetch(`/messages/${athleteId}`, token);
-      if (Array.isArray(msgs)) setMessages(msgs);
-    } catch {}
+      if (Array.isArray(msgs)) { setMessages(msgs); setErrCount(0); }
+    } catch { setErrCount(c => c + 1); }
     setLoading(false);
   };
 
   useEffect(() => { load(); }, [athleteId, token]);
   useEffect(() => {
-    const interval = setInterval(load, 10 * 1000);
+    if (errCount > 3) return; // stop after 3 consecutive errors
+    const interval = setInterval(load, 15 * 1000);
     return () => clearInterval(interval);
-  }, [athleteId, token]);
+  }, [athleteId, token, errCount]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async () => {
@@ -1415,6 +1417,7 @@ function CoachMessaging({ athleteId, athleteName, token }) {
       });
       setMessages(prev => [...prev, msg]);
       setInput("");
+      setErrCount(0);
     } catch (e) { alert(e.message); }
     setSending(false);
   };
@@ -1706,7 +1709,7 @@ function AdminCoachOverview({ token, myId }) {
           📢 MESSAGE ALL CLIENTS ({totalAthletes})
         </button>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260, 1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 12 }}>
         {coaches.map(c => (
           <div key={c.id} onClick={() => openCoach(c)} style={{
             background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18,

@@ -1488,16 +1488,19 @@ function CoachMessaging({ athleteId, athleteName, token }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Broadcast Modal — send message to all athletes
 ────────────────────────────────────────────────────────────────────────────── */
-function BroadcastModal({ token, athleteCount, onClose }) {
+function BroadcastModal({ token, athleteCount, onClose, endpoint, label }) {
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
+  const apiPath = endpoint || "/messages/broadcast";
+  const desc = label || `Send to all ${athleteCount} athletes on your roster`;
+  const btnLabel = label ? "SEND TO ALL CLIENTS" : "BROADCAST TO ALL";
 
   const send = async () => {
     if (!content.trim() || sending) return;
     setSending(true);
     try {
-      const result = await apiFetch("/messages/broadcast", token, {
+      await apiFetch(apiPath, token, {
         method: "POST",
         body: JSON.stringify({ content: content.trim() }),
       });
@@ -1515,18 +1518,18 @@ function BroadcastModal({ token, athleteCount, onClose }) {
           BROADCAST MESSAGE
         </div>
         <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16 }}>
-          Send to all {athleteCount} athletes on your roster
+          {desc}
         </div>
         {sent ? (
           <div style={{ background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 18, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 13, textAlign: "center" }}>
-            Message sent to all athletes
+            Message sent successfully
           </div>
         ) : (
           <>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="Type your message to all athletes…"
+              placeholder="Type your message…"
               rows={4}
               style={{
                 width: "100%", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12,
@@ -1543,7 +1546,7 @@ function BroadcastModal({ token, athleteCount, onClose }) {
                 border: "none", borderRadius: 10, padding: 11,
                 fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5,
                 cursor: content.trim() && !sending ? "pointer" : "default",
-              }} type="button">{sending ? "SENDING…" : "BROADCAST TO ALL"}</button>
+              }} type="button">{sending ? "SENDING…" : btnLabel}</button>
             </div>
           </>
         )}
@@ -1563,6 +1566,9 @@ function AdminCoachOverview({ token, myId }) {
   const [loadingAthletes, setLoadingAthletes] = useState(false);
   const [reassigning, setReassigning] = useState(null); // athleteId being reassigned
   const [targetCoach, setTargetCoach] = useState("");
+  const [showBroadcastAll, setShowBroadcastAll] = useState(false);
+
+  const totalAthletes = coaches.reduce((s, c) => s + (c.athleteCount || 0), 0);
 
   const loadCoaches = async () => {
     try {
@@ -1673,11 +1679,32 @@ function AdminCoachOverview({ token, myId }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div>
-        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>COACH OVERVIEW</div>
-        <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
-          Click a coach to see their athletes and reassign between coaches.
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>COACH OVERVIEW</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
+            Click a coach to see their athletes and reassign between coaches.
+          </div>
         </div>
+        <button
+          onClick={() => setShowBroadcastAll(true)}
+          disabled={totalAthletes === 0}
+          style={{
+            background: "none",
+            border: `1px solid ${T.accent}44`,
+            color: T.accent,
+            borderRadius: 10,
+            padding: "10px 18px",
+            fontFamily: "Bebas Neue, system-ui",
+            fontSize: 14,
+            letterSpacing: 1.5,
+            cursor: totalAthletes > 0 ? "pointer" : "default",
+            opacity: totalAthletes > 0 ? 1 : 0.5,
+          }}
+          type="button"
+        >
+          📢 MESSAGE ALL CLIENTS ({totalAthletes})
+        </button>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260, 1fr))", gap: 12 }}>
         {coaches.map(c => (
@@ -1709,6 +1736,15 @@ function AdminCoachOverview({ token, myId }) {
           </div>
         ))}
       </div>
+      {showBroadcastAll && (
+        <BroadcastModal
+          token={token}
+          athleteCount={totalAthletes}
+          onClose={() => setShowBroadcastAll(false)}
+          endpoint="/messages/broadcast-all"
+          label={`Send to all ${totalAthletes} clients across all coaches`}
+        />
+      )}
     </div>
   );
 }

@@ -91,6 +91,50 @@ function randomAvatarColor() {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Table + button style helpers
+────────────────────────────────────────────────────────────────────────────── */
+const miniBtnStyle = () => ({
+  background: "none",
+  border: `1px solid ${T.border}`,
+  borderRadius: 8,
+  padding: "6px 14px",
+  fontFamily: "Bebas Neue, system-ui",
+  fontSize: 13,
+  letterSpacing: 1.5,
+  cursor: "pointer",
+});
+const thStyle = () => ({
+  fontFamily: "DM Sans",
+  fontSize: 10,
+  color: T.muted,
+  letterSpacing: 1,
+  textTransform: "uppercase",
+  padding: "8px 6px",
+  textAlign: "center",
+  borderBottom: `1px solid ${T.border}`,
+});
+const tdStyle = () => ({
+  fontFamily: "JetBrains Mono, ui-monospace",
+  fontSize: 12,
+  color: T.text,
+  padding: "6px 4px",
+  textAlign: "center",
+  borderBottom: `1px solid ${T.border}20`,
+});
+const cellInput = () => ({
+  width: "100%",
+  background: T.surface,
+  border: `1px solid ${T.border}`,
+  borderRadius: 6,
+  padding: "6px 8px",
+  color: T.text,
+  fontFamily: "JetBrains Mono, ui-monospace",
+  fontSize: 12,
+  textAlign: "center",
+  outline: "none",
+});
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Small UI atoms
 ────────────────────────────────────────────────────────────────────────────── */
 const Badge = ({ label, color = T.accent }) => (
@@ -700,6 +744,251 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
     </div>
   );
 }
+/* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Mood Viewer — shows mood history for coach
+────────────────────────────────────────────────────────────────────────────── */
+function AthleteMoodViewer({ athleteId, token }) {
+  const [moods, setMoods] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const rows = await apiFetch(`/moods/${athleteId}`, token);
+        setMoods(Array.isArray(rows) ? rows.slice(0, 30) : []);
+      } catch { setMoods([]); }
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+  const avgScore = moods.length > 0 ? (moods.reduce((a, m) => a + Number(m.mood_id || 0), 0) / moods.length).toFixed(1) : "—";
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 12 }}>MOOD LOG</div>
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : moods.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>No mood entries logged yet.</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+            <StatCard label="AVG MOOD" value={avgScore} color={Number(avgScore) >= 4 ? T.coachGreen : Number(avgScore) >= 3 ? T.accent : T.danger} unit="/5" />
+            <StatCard label="ENTRIES" value={moods.length} color={T.info} />
+          </div>
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {moods.map((m, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: i < moods.length-1 ? `1px solid ${T.border}20` : "none" }}>
+                <span style={{ fontSize: 22 }}>{m.emoji || "😶"}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{m.label || "Unknown"} <span style={{ color: T.muted, fontWeight: 400, marginLeft: 6 }}>({m.mood_id}/5)</span></div>
+                  {m.note && <div style={{ fontSize: 11, color: T.muted, marginTop: 2 }}>{m.note}</div>}
+                </div>
+                <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>{m.date}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Weight Viewer — shows weight history for coach
+────────────────────────────────────────────────────────────────────────────── */
+function AthleteWeightViewer({ athleteId, token }) {
+  const [weights, setWeights] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const rows = await apiFetch(`/weights/${athleteId}`, token);
+        setWeights(Array.isArray(rows) ? rows.slice(0, 30) : []);
+      } catch { setWeights([]); }
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+  const latest = weights[0]?.kg ? Number(weights[0].kg).toFixed(1) : "—";
+  const trend = weights.length >= 2 ? (Number(weights[0].kg) - Number(weights[weights.length-1].kg)).toFixed(1) : null;
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 12 }}>WEIGHT LOG</div>
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : weights.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>No weight entries logged yet.</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+            <StatCard label="LATEST" value={latest} color={T.accent} unit="kg" />
+            <StatCard label="ENTRIES" value={weights.length} color={T.info} />
+            {trend !== null && <StatCard label="CHANGE" value={`${Number(trend) >= 0 ? "+" : ""}${trend}`} color={Number(trend) > 0 ? T.danger : T.coachGreen} unit="kg" />}
+          </div>
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {weights.map((w, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: i < weights.length-1 ? `1px solid ${T.border}20` : "none" }}>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 13, color: T.text, fontWeight: 600 }}>{Number(w.kg).toFixed(1)} kg</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>{w.date}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Food Log Viewer — shows food log for coach
+────────────────────────────────────────────────────────────────────────────── */
+function AthleteFoodLogViewer({ athleteId, token }) {
+  const [foodLogs, setFoodLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const today = new Date();
+        const start = new Date(today);
+        start.setDate(today.getDate() - 7);
+        const startStr = `${start.getFullYear()}-${String(start.getMonth()+1).padStart(2,'0')}-${String(start.getDate()).padStart(2,'0')}`;
+        const endStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+        const rows = await apiFetch(`/food-logs/${athleteId}?start=${startStr}&end=${endStr}`, token);
+        setFoodLogs(Array.isArray(rows) ? rows : []);
+      } catch { setFoodLogs([]); }
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 12 }}>FOOD LOG (LAST 7 DAYS)</div>
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : foodLogs.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>No food logged in the last 7 days.</div>
+      ) : (
+        <div style={{ maxHeight: 400, overflowY: "auto" }}>
+          {foodLogs.map((dl, i) => {
+            const foods = dl.foods || [];
+            const totCal = foods.reduce((s, f) => s + Number(f.calories || 0), 0);
+            const totP = foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0);
+            const totC = foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0);
+            const totF = foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0);
+            return (
+              <div key={i} style={{ marginBottom: 14, paddingBottom: 12, borderBottom: i < foodLogs.length-1 ? `1px solid ${T.border}` : "none" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1, color: T.accent }}>{dl.date}</span>
+                  <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
+                    {totCal} cal · {Math.round(totP)}p · {Math.round(totC)}c · {Math.round(totF)}f
+                  </span>
+                </div>
+                {foods.map((f, j) => (
+                  <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", fontSize: 11 }}>
+                    <span style={{ color: T.text }}>{f.name}</span>
+                    <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
+                      {f.calories || 0} cal
+                    </span>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Calendar Manager — view + add events for athlete
+────────────────────────────────────────────────────────────────────────────── */
+function AthleteCalendarManager({ athleteId, token }) {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ date: "", title: "", notes: "" });
+  const [saving, setSaving] = useState(false);
+
+  const loadEvents = async () => {
+    try {
+      const rows = await apiFetch(`/calendar-events/${athleteId}`, token);
+      setEvents(Array.isArray(rows) ? rows : []);
+    } catch { setEvents([]); }
+  };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      await loadEvents();
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+
+  const addEvent = async () => {
+    if (!form.date || !form.title.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/calendar-events/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: form.notes }),
+      });
+      setForm({ date: "", title: "", notes: "" });
+      await loadEvents();
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+
+  const deleteEvent = async (id) => {
+    try {
+      await apiFetch(`/calendar-events/${athleteId}/${id}`, token, { method: "DELETE" });
+      await loadEvents();
+    } catch (e) { alert(e.message); }
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>CALENDAR EVENTS</div>
+
+      {/* Add event form */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
+        <div>
+          <label style={labelStyle}>Date</label>
+          <input type="date" value={form.date} onChange={(e) => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Title</label>
+          <input value={form.title} onChange={(e) => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Check-in call" style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Notes</label>
+          <input value={form.notes} onChange={(e) => setForm(p => ({...p, notes: e.target.value}))} placeholder="Optional notes" style={inputStyle} />
+        </div>
+        <button onClick={addEvent} disabled={saving || !form.date || !form.title.trim()} style={{
+          background: form.date && form.title.trim() ? T.accent : T.border,
+          color: form.date && form.title.trim() ? T.bg : T.muted,
+          border: "none", borderRadius: 10, padding: "11px 16px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+          cursor: form.date && form.title.trim() && !saving ? "pointer" : "default",
+        }} type="button">{saving ? "…" : "ADD"}</button>
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : events.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>No calendar events yet. Add one above.</div>
+      ) : (
+        <div style={{ maxHeight: 300, overflowY: "auto" }}>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
+              <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
+                {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
+              </div>
+              <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AthleteDetail({ athlete, token, onBack }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
@@ -740,6 +1029,9 @@ function AthleteDetail({ athlete, token, onBack }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
+    { id: "data", label: "MOOD & WEIGHT" },
+    { id: "foodlog", label: "FOOD LOG" },
+    { id: "calendar", label: "CALENDAR" },
   ];
 
   return (
@@ -959,6 +1251,21 @@ function AthleteDetail({ athlete, token, onBack }) {
         setInitialGoals(next);
         setGoals(next);
       }} />
+      )}
+
+      {tab === "data" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <AthleteMoodViewer athleteId={athlete.id} token={token} />
+          <AthleteWeightViewer athleteId={athlete.id} token={token} />
+        </div>
+      )}
+
+      {tab === "foodlog" && (
+        <AthleteFoodLogViewer athleteId={athlete.id} token={token} />
+      )}
+
+      {tab === "calendar" && (
+        <AthleteCalendarManager athleteId={athlete.id} token={token} />
       )}
     </div>
   );

@@ -1943,6 +1943,9 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [mfpUsername, setMfpUsername] = useState(athlete.mfpUsername || "");
+  const [mfpEditing, setMfpEditing] = useState(false);
+  const [mfpSaving, setMfpSaving] = useState(false);
   const [initialGoals, setInitialGoals] = useState(() => ({
     calories: athlete.macroGoals?.calories ?? 2500,
     protein: athlete.macroGoals?.protein ?? 180,
@@ -1951,6 +1954,28 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   }));
   const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
+
+  // Load MFP username from profile
+  useEffect(() => {
+    (async () => {
+      try {
+        const prof = await apiFetch(`/profiles/${athlete.id}`, token);
+        if (prof?.mfpUsername) setMfpUsername(prof.mfpUsername);
+      } catch {}
+    })();
+  }, [athlete.id, token]);
+
+  const saveMfpUsername = async () => {
+    setMfpSaving(true);
+    try {
+      await apiFetch(`/profiles/${athlete.id}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ mfpUsername: mfpUsername.trim() || null }),
+      });
+      setMfpEditing(false);
+    } catch (e) { alert(e.message); }
+    setMfpSaving(false);
+  };
 
   const handleSaveTargets = async () => {
     // Persist these targets by applying them to ALL days in the macro plan and saving to backend
@@ -2254,6 +2279,62 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
           </div>
         </div>
 
+        {/* MFP Integration */}
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text }}>MYFITNESSPAL</div>
+              <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 2 }}>
+                Link their MFP username to auto-sync food diary data
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {mfpUsername && !mfpEditing && (
+                <a href={`https://www.myfitnesspal.com/food/diary/${mfpUsername}`} target="_blank" rel="noopener noreferrer"
+                  style={{ fontFamily: "DM Sans", fontSize: 10, color: T.info, textDecoration: "none" }}>
+                  View diary ↗
+                </a>
+              )}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {mfpEditing ? (
+              <>
+                <input
+                  value={mfpUsername}
+                  onChange={(e) => setMfpUsername(e.target.value)}
+                  placeholder="MFP username"
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+                <button onClick={saveMfpUsername} disabled={mfpSaving} style={{
+                  background: T.accent, color: T.bg, border: "none", borderRadius: 8, padding: "8px 14px",
+                  fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1, cursor: "pointer",
+                }} type="button">{mfpSaving ? "…" : "SAVE"}</button>
+                <button onClick={() => setMfpEditing(false)} style={{
+                  background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 10px",
+                  color: T.muted, fontSize: 11, cursor: "pointer",
+                }} type="button">✕</button>
+              </>
+            ) : (
+              <>
+                <div style={{ flex: 1, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 13, color: mfpUsername ? T.text : T.muted }}>
+                  {mfpUsername || "Not linked"}
+                </div>
+                <button onClick={() => setMfpEditing(true)} style={{
+                  background: "none", border: `1px solid ${T.accent}44`, borderRadius: 8, padding: "6px 14px",
+                  color: T.accent, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer",
+                }} type="button">{mfpUsername ? "Change" : "Link MFP"}</button>
+              </>
+            )}
+          </div>
+          {mfpUsername && (
+            <div style={{ marginTop: 10, fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>
+              The athlete's app will auto-sync from this MFP diary. Ensure the diary is set to <span style={{ color: T.text }}>public</span> in MFP settings.
+              Food data syncs into the meal plan and appears in the Food Log tab.
+            </div>
+          )}
+        </div>
+
         {/* Weekly adherence dashboard */}
         <WeeklyAdherenceView athleteId={athlete.id} token={token} />
         </>
@@ -2501,6 +2582,7 @@ export default function CoachCMS() {
           sport: a.sport || "—",
           avatar: initialsOf(a.name),
           avatarColor: randomAvatarColor(),
+          mfpUsername: a.mfp_username || "",
           macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
         }));
         setAthletes(mapped);

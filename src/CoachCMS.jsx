@@ -1142,6 +1142,231 @@ function AthleteCalendarManager({ athleteId, token }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Weekly Adherence Dashboard — shows each day's targets vs actuals as % bars
+────────────────────────────────────────────────────────────────────────────── */
+function WeeklyAdherenceView({ athleteId, token }) {
+  const [targets, setTargets] = useState({}); // { MON: {cal,p,c,f}, ... }
+  const [actuals, setActuals] = useState({}); // { '2025-03-10': {cal,p,c,f}, ... }
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    let ignore = false;
+    (async () => {
+      setLoading(true);
+      try {
+        // Get macro plans (targets per day of week)
+        const plans = await apiFetch(`/macro-plans/${athleteId}`, token);
+        const byDay = {};
+        (Array.isArray(plans) ? plans : []).forEach(r => {
+          byDay[r.day_of_week] = {
+            calories: Number(r.calories || 0),
+            protein: Number(r.protein_g || 0),
+            carbs: Number(r.carbs_g || 0),
+            fat: Number(r.fat_g || 0),
+          };
+        });
+        if (!ignore) setTargets(byDay);
+
+        // Get daily totals for last 7 days
+        const today = new Date();
+        const start = new Date(today); start.setDate(today.getDate() - 6);
+        const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token);
+        const byDate = {};
+        (Array.isArray(totals) ? totals : []).forEach(r => {
+          byDate[r.date] = {
+            calories: Number(r.calories || 0),
+            protein: Number(r.protein_g || 0),
+            carbs: Number(r.carbs_g || 0),
+            fat: Number(r.fat_g || 0),
+          };
+        });
+        if (!ignore) setActuals(byDate);
+      } catch {}
+      if (!ignore) setLoading(false);
+    })();
+    return () => { ignore = true; };
+  }, [athleteId, token]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    const refresh = async () => {
+      try {
+        const today = new Date();
+        const start = new Date(today); start.setDate(today.getDate() - 6);
+        const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        const totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token);
+        const byDate = {};
+        (Array.isArray(totals) ? totals : []).forEach(r => {
+          byDate[r.date] = {
+            calories: Number(r.calories || 0),
+            protein: Number(r.protein_g || 0),
+            carbs: Number(r.carbs_g || 0),
+            fat: Number(r.fat_g || 0),
+          };
+        });
+        setActuals(byDate);
+      } catch {}
+    };
+    const interval = setInterval(refresh, 30 * 1000);
+    return () => clearInterval(interval);
+  }, [athleteId, token]);
+
+  // Build last 7 days with day key + date
+  const days = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const dow = d.getDay();
+    const dayKey = DAYS[dow === 0 ? 6 : dow - 1];
+    const dateStr = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    days.push({ dayKey, dateStr, isToday: i === 0 });
+  }
+
+  const pctColor = (pct) => {
+    if (pct === null) return T.muted;
+    if (pct >= 90 && pct <= 110) return T.coachGreen;
+    if (pct >= 75 && pct <= 125) return T.warn;
+    return T.danger;
+  };
+
+  const macros = [
+    { key: "calories", label: "CAL", color: T.accent },
+    { key: "protein", label: "P", color: T.protein },
+    { key: "carbs", label: "C", color: T.carbs },
+    { key: "fat", label: "F", color: T.fat },
+  ];
+
+  // Overall adherence for the week
+  let adheredDays = 0;
+  let totalTracked = 0;
+  days.forEach(({ dayKey, dateStr }) => {
+    const target = targets[dayKey];
+    const actual = actuals[dateStr];
+    if (target && actual && target.calories > 0 && actual.calories > 0) {
+      totalTracked++;
+      const calPct = (actual.calories / target.calories) * 100;
+      if (calPct >= 80 && calPct <= 120) adheredDays++;
+    }
+  });
+  const weekPct = totalTracked > 0 ? Math.round((adheredDays / totalTracked) * 100) : null;
+
+  if (loading) return <div style={{ color: T.muted, fontSize: 12, padding: 18 }}>Loading weekly overview…</div>;
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>WEEKLY ADHERENCE</div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 2 }}>
+            Target vs actual for each day · Auto-refreshes every 30s
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
+          <span style={{ fontFamily: "DM Sans", fontSize: 10, color: T.coachGreen }}>LIVE</span>
+          {weekPct !== null && (
+            <span style={{
+              fontFamily: "Bebas Neue, system-ui", fontSize: 22,
+              color: weekPct >= 80 ? T.coachGreen : weekPct >= 60 ? T.warn : T.danger,
+            }}>{weekPct}%</span>
+          )}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 14, fontSize: 10, fontFamily: "DM Sans" }}>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: T.coachGreen, marginRight: 4, verticalAlign: "middle" }} />90–110%</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: T.warn, marginRight: 4, verticalAlign: "middle" }} />75–125%</span>
+        <span><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: T.danger, marginRight: 4, verticalAlign: "middle" }} />Outside</span>
+        <span style={{ color: T.muted }}><span style={{ display: "inline-block", width: 8, height: 8, borderRadius: 2, background: T.border, marginRight: 4, verticalAlign: "middle" }} />No data</span>
+      </div>
+
+      {/* Day rows */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {days.map(({ dayKey, dateStr, isToday }) => {
+          const target = targets[dayKey] || {};
+          const actual = actuals[dateStr] || {};
+          const hasData = actual.calories > 0;
+
+          return (
+            <div key={dateStr} style={{
+              background: isToday ? `${T.accent}08` : "transparent",
+              border: isToday ? `1px solid ${T.accent}22` : `1px solid transparent`,
+              borderRadius: 10, padding: "10px 12px",
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                <span style={{
+                  fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
+                  color: isToday ? T.accent : T.text, minWidth: 36,
+                }}>{dayKey}</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{dateStr.slice(5)}</span>
+                {isToday && <span style={{ fontSize: 9, color: T.accent, fontFamily: "DM Sans", fontWeight: 700 }}>TODAY</span>}
+                {!hasData && <span style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans", fontStyle: "italic" }}>No food logged</span>}
+              </div>
+
+              {hasData && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                  {macros.map(m => {
+                    const tgt = target[m.key] || 0;
+                    const act = actual[m.key] || 0;
+                    const pct = tgt > 0 ? Math.round((act / tgt) * 100) : null;
+                    const barPct = pct !== null ? Math.min(pct, 150) : 0;
+                    const col = pctColor(pct);
+
+                    return (
+                      <div key={m.key}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                          <span style={{ fontSize: 9, fontFamily: "DM Sans", color: T.muted, fontWeight: 600 }}>{m.label}</span>
+                          <span style={{ fontSize: 10, fontFamily: "JetBrains Mono, ui-monospace", color: col, fontWeight: 700 }}>
+                            {pct !== null ? `${pct}%` : "—"}
+                          </span>
+                        </div>
+                        {/* Bar */}
+                        <div style={{ height: 6, background: T.border, borderRadius: 3, overflow: "hidden", position: "relative" }}>
+                          {/* Target marker at 100% */}
+                          <div style={{ position: "absolute", left: `${Math.min(100 / 1.5, 100)}%`, top: 0, bottom: 0, width: 1, background: `${T.text}33`, zIndex: 2 }} />
+                          <div style={{
+                            height: "100%", borderRadius: 3,
+                            width: `${Math.min(barPct / 1.5, 100)}%`,
+                            background: col,
+                            transition: "width .3s ease",
+                          }} />
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 2 }}>
+                          <span style={{ fontSize: 8, fontFamily: "JetBrains Mono, ui-monospace", color: T.muted }}>
+                            {Math.round(act)}{m.key === "calories" ? "" : "g"}
+                          </span>
+                          <span style={{ fontSize: 8, fontFamily: "JetBrains Mono, ui-monospace", color: T.muted }}>
+                            /{Math.round(tgt)}{m.key === "calories" ? "" : "g"}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {!hasData && (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                  {macros.map(m => (
+                    <div key={m.key}>
+                      <div style={{ height: 6, background: T.border, borderRadius: 3 }} />
+                      <div style={{ fontSize: 8, color: T.muted, marginTop: 2, fontFamily: "JetBrains Mono, ui-monospace", textAlign: "center" }}>—</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
@@ -1327,6 +1552,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       </div>
 
       {tab === "nutrition" && (
+        <>
         <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 18, padding: 22 }}>
           {saved && (
             <div
@@ -1455,6 +1681,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
             ))}
           </div>
         </div>
+
+        {/* Weekly adherence dashboard */}
+        <WeeklyAdherenceView athleteId={athlete.id} token={token} />
+        </>
       )}
 
       {tab === "macroplan" && (

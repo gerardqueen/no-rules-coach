@@ -1380,6 +1380,339 @@ function WeeklyAdherenceView({ athleteId, token }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Coach Messaging — 1-on-1 with athlete
+────────────────────────────────────────────────────────────────────────────── */
+function CoachMessaging({ athleteId, athleteName, token }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const bottomRef = useRef(null);
+
+  const load = async () => {
+    try {
+      const msgs = await apiFetch(`/messages/${athleteId}`, token);
+      if (Array.isArray(msgs)) setMessages(msgs);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, [athleteId, token]);
+  useEffect(() => {
+    const interval = setInterval(load, 10 * 1000);
+    return () => clearInterval(interval);
+  }, [athleteId, token]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const send = async () => {
+    if (!input.trim() || sending) return;
+    setSending(true);
+    try {
+      const msg = await apiFetch(`/messages/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({ content: input.trim() }),
+      });
+      setMessages(prev => [...prev, msg]);
+      setInput("");
+    } catch (e) { alert(e.message); }
+    setSending(false);
+  };
+
+  // Decode who is coach (fromId != athleteId = coach message)
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, overflow: "hidden" }}>
+      <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>
+            MESSAGES — {athleteName}
+          </div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>Direct chat · Auto-refreshes every 10s</div>
+        </div>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
+          <span style={{ fontFamily: "DM Sans", fontSize: 10, color: T.coachGreen }}>LIVE</span>
+        </div>
+      </div>
+
+      <div style={{ maxHeight: 400, overflowY: "auto", padding: "12px 18px" }}>
+        {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> :
+         messages.length === 0 ? (
+          <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, padding: "24px 0", textAlign: "center" }}>
+            No messages yet. Start the conversation with {athleteName}!
+          </div>
+        ) : messages.map((m) => {
+          const isCoach = m.fromId !== athleteId;
+          return (
+            <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 8 }}>
+              <div style={{
+                maxWidth: "75%", padding: "10px 14px", borderRadius: 14,
+                background: isCoach ? T.accent : T.surface,
+                color: isCoach ? T.bg : T.text,
+                borderBottomRightRadius: isCoach ? 4 : 14,
+                borderBottomLeftRadius: isCoach ? 14 : 4,
+              }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.4 }}>{m.content}</div>
+                <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
+                  {new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={{ padding: "10px 18px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder={`Message ${athleteName}…`}
+          style={{
+            flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
+            padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none",
+          }}
+        />
+        <button onClick={send} disabled={sending || !input.trim()} style={{
+          background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted,
+          border: "none", borderRadius: 10, padding: "10px 16px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
+          cursor: input.trim() ? "pointer" : "default",
+        }} type="button">{sending ? "…" : "SEND"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Broadcast Modal — send message to all athletes
+────────────────────────────────────────────────────────────────────────────── */
+function BroadcastModal({ token, athleteCount, onClose }) {
+  const [content, setContent] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const send = async () => {
+    if (!content.trim() || sending) return;
+    setSending(true);
+    try {
+      const result = await apiFetch("/messages/broadcast", token, {
+        method: "POST",
+        body: JSON.stringify({ content: content.trim() }),
+      });
+      setSent(true);
+      setTimeout(() => onClose(), 1500);
+    } catch (e) { alert(e.message); }
+    setSending(false);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000000d0", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div style={{ width: "100%", maxWidth: 520, background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22, padding: 24, animation: "fadeUp .2s ease" }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text, marginBottom: 6 }}>
+          BROADCAST MESSAGE
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16 }}>
+          Send to all {athleteCount} athletes on your roster
+        </div>
+        {sent ? (
+          <div style={{ background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 18, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 13, textAlign: "center" }}>
+            Message sent to all athletes
+          </div>
+        ) : (
+          <>
+            <textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Type your message to all athletes…"
+              rows={4}
+              style={{
+                width: "100%", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12,
+                padding: 14, color: T.text, fontFamily: "DM Sans", fontSize: 13, outline: "none", resize: "vertical",
+              }}
+            />
+            <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+              <button onClick={onClose} style={{
+                flex: 1, background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: 11,
+                color: T.muted, fontFamily: "DM Sans", fontSize: 13, cursor: "pointer",
+              }} type="button">Cancel</button>
+              <button onClick={send} disabled={sending || !content.trim()} style={{
+                flex: 2, background: content.trim() ? T.accent : T.border, color: content.trim() ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: 11,
+                fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5,
+                cursor: content.trim() && !sending ? "pointer" : "default",
+              }} type="button">{sending ? "SENDING…" : "BROADCAST TO ALL"}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Admin Coach Overview — shows all coaches, their athletes, and reassignment
+────────────────────────────────────────────────────────────────────────────── */
+function AdminCoachOverview({ token, myId }) {
+  const [coaches, setCoaches] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedCoach, setSelectedCoach] = useState(null);
+  const [athletes, setAthletes] = useState([]);
+  const [loadingAthletes, setLoadingAthletes] = useState(false);
+  const [reassigning, setReassigning] = useState(null); // athleteId being reassigned
+  const [targetCoach, setTargetCoach] = useState("");
+
+  const loadCoaches = async () => {
+    try {
+      const rows = await apiFetch("/admin/coach-overview", token);
+      setCoaches(Array.isArray(rows) ? rows : []);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { loadCoaches(); }, [token]);
+
+  const openCoach = async (coach) => {
+    setSelectedCoach(coach);
+    setLoadingAthletes(true);
+    try {
+      const rows = await apiFetch(`/admin/coach/${coach.id}/athletes`, token);
+      setAthletes(Array.isArray(rows) ? rows : []);
+    } catch { setAthletes([]); }
+    setLoadingAthletes(false);
+  };
+
+  const reassignAthlete = async (athleteId) => {
+    if (!targetCoach) return;
+    try {
+      await apiFetch("/admin/reassign", token, {
+        method: "PUT",
+        body: JSON.stringify({ athleteId, newCoachId: Number(targetCoach) }),
+      });
+      setReassigning(null);
+      setTargetCoach("");
+      // Reload
+      await openCoach(selectedCoach);
+      await loadCoaches();
+    } catch (e) { alert(e.message); }
+  };
+
+  if (loading) return <div style={{ color: T.muted, fontSize: 12, padding: 18 }}>Loading coaches…</div>;
+
+  if (selectedCoach) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .2s ease" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <button onClick={() => { setSelectedCoach(null); setAthletes([]); }} style={{
+            background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px",
+            color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer",
+          }} type="button">← All Coaches</button>
+          <div>
+            <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 1.5, color: T.text }}>
+              {selectedCoach.name.toUpperCase()}
+            </span>
+            <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginLeft: 10 }}>
+              {selectedCoach.athleteCount} athletes
+              {selectedCoach.adherencePct !== null && <> · {selectedCoach.adherencePct}% adherence</>}
+            </span>
+          </div>
+        </div>
+
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 20, overflow: "hidden" }}>
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${T.border}` }}>
+            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2 }}>ATHLETES</div>
+          </div>
+          {loadingAthletes ? <div style={{ padding: 18, color: T.muted }}>Loading…</div> :
+           athletes.length === 0 ? <div style={{ padding: 18, color: T.muted }}>No athletes assigned to this coach.</div> :
+           athletes.map((a, idx) => (
+            <div key={a.id} style={{
+              padding: "14px 18px", borderBottom: idx < athletes.length - 1 ? `1px solid ${T.border}` : "none",
+              display: "flex", alignItems: "center", gap: 12,
+            }}>
+              <Avatar initials={initialsOf(a.name)} color={T.accent} size={36} />
+              <div style={{ flex: 1 }}>
+                <span style={{ fontWeight: 700, color: T.text }}>{a.name}</span>
+                <Badge label={a.sport || "ATHLETE"} color={T.coachGreen} />
+                <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>{a.email}</div>
+              </div>
+              {reassigning === a.id ? (
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select value={targetCoach} onChange={(e) => setTargetCoach(e.target.value)} style={{
+                    background: T.surface, border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px",
+                    color: T.text, fontFamily: "DM Sans", fontSize: 11, outline: "none",
+                  }}>
+                    <option value="" style={{ background: T.bg }}>Select coach…</option>
+                    {coaches.filter(c => c.id !== selectedCoach.id).map(c => (
+                      <option key={c.id} value={c.id} style={{ background: T.bg }}>{c.name}</option>
+                    ))}
+                  </select>
+                  <button onClick={() => reassignAthlete(a.id)} disabled={!targetCoach} style={{
+                    background: targetCoach ? T.accent : T.border, color: targetCoach ? T.bg : T.muted,
+                    border: "none", borderRadius: 6, padding: "4px 10px",
+                    fontFamily: "Bebas Neue, system-ui", fontSize: 11, cursor: targetCoach ? "pointer" : "default",
+                  }} type="button">MOVE</button>
+                  <button onClick={() => { setReassigning(null); setTargetCoach(""); }} style={{
+                    background: "none", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px",
+                    color: T.muted, fontSize: 10, cursor: "pointer",
+                  }} type="button">✕</button>
+                </div>
+              ) : (
+                <button onClick={() => setReassigning(a.id)} style={{
+                  background: "none", border: `1px solid ${T.accent}44`, borderRadius: 8, padding: "6px 12px",
+                  color: T.accent, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer",
+                }} type="button">Reassign</button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, letterSpacing: 2 }}>COACH OVERVIEW</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginTop: 4 }}>
+          Click a coach to see their athletes and reassign between coaches.
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260, 1fr))", gap: 12 }}>
+        {coaches.map(c => (
+          <div key={c.id} onClick={() => openCoach(c)} style={{
+            background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18,
+            cursor: "pointer", transition: "border-color .2s",
+          }}
+            onMouseEnter={(e) => e.currentTarget.style.borderColor = T.accent + "55"}
+            onMouseLeave={(e) => e.currentTarget.style.borderColor = T.border}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+              <Avatar initials={initialsOf(c.name)} color={c.role === "admin" ? T.accent : T.coachGreen} size={44} />
+              <div>
+                <div style={{ fontWeight: 700, color: T.text }}>{c.name}</div>
+                <Badge label={c.role.toUpperCase()} color={c.role === "admin" ? T.accent : T.coachGreen} />
+              </div>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div style={{ background: T.surface, borderRadius: 10, padding: "8px 10px" }}>
+                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, color: T.accent }}>{c.athleteCount}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted, letterSpacing: 0.8 }}>ATHLETES</div>
+              </div>
+              <div style={{ background: T.surface, borderRadius: 10, padding: "8px 10px" }}>
+                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, color: c.adherencePct !== null && c.adherencePct >= 70 ? T.coachGreen : c.adherencePct !== null ? T.warn : T.muted }}>
+                  {c.adherencePct !== null ? `${c.adherencePct}%` : "—"}
+                </div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted, letterSpacing: 0.8 }}>ADHERENCE</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
@@ -1422,6 +1755,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
+    { id: "messages", label: "MESSAGES" },
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
     { id: "calendar", label: "CALENDAR" },
@@ -1719,6 +2053,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       }} />
       )}
 
+      {tab === "messages" && (
+        <CoachMessaging athleteId={athlete.id} athleteName={athlete.name} token={token} />
+      )}
+
       {tab === "data" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <AthleteMoodViewer athleteId={athlete.id} token={token} />
@@ -1892,8 +2230,7 @@ export default function CoachCMS() {
 
   const [showAdd, setShowAdd] = useState(false);
   const [creating, setCreating] = useState(false);
-
-  // Inject fonts once
+  const [showBroadcast, setShowBroadcast] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -2113,6 +2450,26 @@ export default function CoachCMS() {
                 </div>
               </div>
 
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setShowBroadcast(true)}
+                  disabled={athletes.length === 0}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${T.accent}44`,
+                    color: T.accent,
+                    borderRadius: 10,
+                    padding: "10px 14px",
+                    fontFamily: "Bebas Neue, system-ui",
+                    fontSize: 14,
+                    letterSpacing: 1.5,
+                    cursor: athletes.length > 0 ? "pointer" : "default",
+                    opacity: athletes.length > 0 ? 1 : 0.5,
+                  }}
+                  type="button"
+                >
+                  📢 BROADCAST
+                </button>
               <button
                 onClick={() => setShowAdd(true)}
                 style={{
@@ -2130,6 +2487,7 @@ export default function CoachCMS() {
               >
                 + ADD ATHLETE
               </button>
+              </div>
             </div>
 
             {rosterErr && (
@@ -2221,7 +2579,10 @@ export default function CoachCMS() {
         )}
 
         {view === "admin" && me.role === "admin" && (
-          <AdminPanel token={token} myId={me.id} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+            <AdminCoachOverview token={token} myId={me.id} />
+            <AdminPanel token={token} myId={me.id} />
+          </div>
         )}
       </div>
 
@@ -2230,6 +2591,14 @@ export default function CoachCMS() {
           onClose={() => setShowAdd(false)}
           onCreate={createAthlete}
           creating={creating}
+        />
+      )}
+
+      {showBroadcast && (
+        <BroadcastModal
+          token={token}
+          athleteCount={athletes.length}
+          onClose={() => setShowBroadcast(false)}
         />
       )}
     </div>

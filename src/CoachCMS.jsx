@@ -1752,6 +1752,192 @@ function AdminCoachOverview({ token, myId }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Coach Inbox — unified view of all athlete conversations
+────────────────────────────────────────────────────────────────────────────── */
+function CoachInbox({ athletes, token, onBroadcast }) {
+  const [activeId, setActiveId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const bottomRef = useRef(null);
+
+  // Load unread counts
+  const loadUnread = async () => {
+    try {
+      const rows = await apiFetch("/messages-unread", token);
+      const map = {};
+      (Array.isArray(rows) ? rows : []).forEach(r => { map[r.fromId] = r.count; });
+      setUnreadMap(map);
+    } catch {}
+  };
+  useEffect(() => { loadUnread(); }, [token]);
+  useEffect(() => {
+    const interval = setInterval(loadUnread, 15 * 1000);
+    return () => clearInterval(interval);
+  }, [token]);
+
+  // Load chat for active athlete
+  const loadChat = async (aid) => {
+    if (!aid) return;
+    setLoadingChat(true);
+    try {
+      const msgs = await apiFetch(`/messages/${aid}`, token);
+      if (Array.isArray(msgs)) setMessages(msgs);
+      // Clear unread for this athlete
+      setUnreadMap(prev => ({ ...prev, [aid]: 0 }));
+    } catch { setMessages([]); }
+    setLoadingChat(false);
+  };
+
+  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId]);
+  // Poll active chat
+  useEffect(() => {
+    if (!activeId) return;
+    const interval = setInterval(() => loadChat(activeId), 12 * 1000);
+    return () => clearInterval(interval);
+  }, [activeId]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  const send = async () => {
+    if (!input.trim() || !activeId || sending) return;
+    setSending(true);
+    try {
+      const msg = await apiFetch(`/messages/${activeId}`, token, {
+        method: "POST", body: JSON.stringify({ content: input.trim() }),
+      });
+      setMessages(prev => [...prev, msg]);
+      setInput("");
+    } catch (e) { alert(e.message); }
+    setSending(false);
+  };
+
+  const totalUnread = Object.values(unreadMap).reduce((s, c) => s + c, 0);
+  const activeAthlete = athletes.find(a => a.id === activeId);
+
+  // Sort athletes: unread first, then alphabetical
+  const sorted = [...athletes].sort((a, b) => {
+    const ua = unreadMap[a.id] || 0, ub = unreadMap[b.id] || 0;
+    if (ua > 0 && ub === 0) return -1;
+    if (ub > 0 && ua === 0) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return (
+    <div style={{ display: "flex", height: "calc(100vh - 140px)", borderRadius: 20, overflow: "hidden", border: `1px solid ${T.border}`, background: T.bg }}>
+      {/* ── LEFT: Thread list ── */}
+      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
+        <div style={{ padding: "16px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MESSAGES</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{athletes.length} athlete{athletes.length !== 1 ? "s" : ""}</div>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {totalUnread > 0 && (
+              <div style={{ background: T.danger, borderRadius: 10, padding: "2px 8px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: "#fff", fontWeight: 700 }}>{totalUnread}</div>
+            )}
+            <button onClick={onBroadcast} style={{
+              background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 8px",
+              color: T.accent, fontFamily: "DM Sans", fontSize: 9, cursor: "pointer",
+            }} type="button">📢 All</button>
+          </div>
+        </div>
+
+        <div style={{ overflowY: "auto", flex: 1 }}>
+          {sorted.map((a, idx) => {
+            const unread = unreadMap[a.id] || 0;
+            const isActive = activeId === a.id;
+            return (
+              <div key={a.id} onClick={() => { setActiveId(a.id); setInput(""); }} style={{
+                padding: "12px 18px", borderBottom: idx < sorted.length - 1 ? `1px solid ${T.border}` : "none",
+                background: isActive ? T.surface : unread > 0 ? `${T.coachGreen}08` : "transparent",
+                cursor: "pointer", display: "flex", gap: 10, alignItems: "center", transition: "background .15s",
+              }}
+                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = T.surface; }}
+                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = unread > 0 ? `${T.coachGreen}08` : "transparent"; }}
+              >
+                {unread > 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: T.coachGreen, borderRadius: "4px 0 0 4px" }} />}
+                <Avatar initials={a.avatar || initialsOf(a.name)} color={a.avatarColor || T.accent} size={36} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: unread > 0 ? 700 : 500, color: T.text }}>{a.name}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{a.sport || "Athlete"}</div>
+                </div>
+                {unread > 0 && (
+                  <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{unread}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── RIGHT: Active chat ── */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {!activeId ? (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
+            <div style={{ fontSize: 40, opacity: 0.3 }}>💬</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to start messaging</div>
+          </div>
+        ) : (
+          <>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+              <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
+              <div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live chat</div>
+              </div>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
+                <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
+              </div>
+            </div>
+
+            <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+              {loadingChat ? <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>Loading…</div> :
+               messages.length === 0 ? (
+                <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>
+                  No messages yet. Start the conversation with {activeAthlete?.name}!
+                </div>
+              ) : messages.map((m) => {
+                const isCoach = m.fromId !== activeId;
+                return (
+                  <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                    <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
+                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
+                        {m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={bottomRef} />
+            </div>
+
+            <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
+              <input value={input} onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && send()}
+                placeholder={`Message ${activeAthlete?.name}…`}
+                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+              />
+              <button onClick={send} disabled={sending || !input.trim()} style={{
+                background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: "10px 16px",
+                fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
+                cursor: input.trim() ? "pointer" : "default",
+              }} type="button">{sending ? "…" : "SEND"}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [tab, setTab] = useState("nutrition");
   const [editing, setEditing] = useState(false);
@@ -2264,7 +2450,7 @@ export default function CoachCMS() {
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [rosterErr, setRosterErr] = useState("");
   const [athletes, setAthletes] = useState([]);
-  const [view, setView] = useState("overview"); // overview | athlete | admin
+  const [view, setView] = useState("overview"); // overview | athlete | admin | inbox
   const [selected, setSelected] = useState(null);
 
   const [showAdd, setShowAdd] = useState(false);
@@ -2457,6 +2643,20 @@ export default function CoachCMS() {
           )}
 
           <button
+            onClick={() => setView(view === "inbox" ? "overview" : "inbox")}
+            style={{
+              background: view === "inbox" ? `${T.accent}22` : "none",
+              border: `1px solid ${view === "inbox" ? T.accent + "55" : T.border}`,
+              color: view === "inbox" ? T.accent : T.muted,
+              borderRadius: 10, padding: "8px 12px", cursor: "pointer",
+              fontFamily: "DM Sans", fontSize: 12,
+            }}
+            type="button"
+          >
+            {view === "inbox" ? "← Clients" : "💬 Inbox"}
+          </button>
+
+          <button
             onClick={logout}
             style={{
               background: "none",
@@ -2622,6 +2822,14 @@ export default function CoachCMS() {
             <AdminCoachOverview token={token} myId={me.id} />
             <AdminPanel token={token} myId={me.id} />
           </div>
+        )}
+
+        {view === "inbox" && (
+          <CoachInbox
+            athletes={athletes}
+            token={token}
+            onBroadcast={() => setShowBroadcast(true)}
+          />
         )}
       </div>
 

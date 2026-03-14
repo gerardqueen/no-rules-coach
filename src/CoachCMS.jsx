@@ -1446,6 +1446,7 @@ function CoachMessaging({ athleteId, athleteName, token }) {
           </div>
         ) : messages.map((m) => {
           const isCoach = m.fromId !== athleteId;
+          const senderName = m.fromName || (isCoach ? "Coach" : athleteName);
           return (
             <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 8 }}>
               <div style={{
@@ -1455,9 +1456,11 @@ function CoachMessaging({ athleteId, athleteName, token }) {
                 borderBottomRightRadius: isCoach ? 4 : 14,
                 borderBottomLeftRadius: isCoach ? 14 : 4,
               }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: isCoach ? `${T.bg}aa` : T.muted, marginBottom: 2 }}>{senderName}</div>
                 <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.4 }}>{m.content}</div>
                 <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
                   {new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  {m.messageType === "broadcast" && " · 📢"}
                 </div>
               </div>
             </div>
@@ -1757,6 +1760,7 @@ function AdminCoachOverview({ token, myId }) {
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachInbox({ athletes, token, onBroadcast }) {
   const [activeId, setActiveId] = useState(null);
+  const [msgFilter, setMsgFilter] = useState("chat"); // "chat" | "checkin"
   const [messages, setMessages] = useState([]);
   const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
   const [input, setInput] = useState("");
@@ -1779,12 +1783,13 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     return () => clearInterval(interval);
   }, [token]);
 
-  // Load chat for active athlete
+  // Load chat for active athlete (filter by type: chat or checkin)
   const loadChat = async (aid) => {
     if (!aid) return;
     setLoadingChat(true);
     try {
-      const msgs = await apiFetch(`/messages/${aid}`, token);
+      const url = msgFilter === "checkin" ? `/messages/${aid}?type=checkin` : `/messages/${aid}?type=chat`;
+      const msgs = await apiFetch(url, token);
       if (Array.isArray(msgs)) setMessages(msgs);
       // Clear unread for this athlete
       setUnreadMap(prev => ({ ...prev, [aid]: 0 }));
@@ -1792,7 +1797,7 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     setLoadingChat(false);
   };
 
-  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId]);
+  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId, msgFilter]);
   // Poll active chat
   useEffect(() => {
     if (!activeId) return;
@@ -1806,7 +1811,10 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     setSending(true);
     try {
       const msg = await apiFetch(`/messages/${activeId}`, token, {
-        method: "POST", body: JSON.stringify({ content: input.trim() }),
+        method: "POST", body: JSON.stringify({
+          content: input.trim(),
+          messageType: msgFilter === "checkin" ? "checkin" : "chat",
+        }),
       });
       setMessages(prev => [...prev, msg]);
       setInput("");
@@ -1884,13 +1892,23 @@ function CoachInbox({ athletes, token, onBroadcast }) {
           </div>
         ) : (
           <>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
               <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
-              <div>
+              <div style={{ flex: 1 }}>
                 <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live chat</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live</div>
               </div>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 4, background: T.surface, borderRadius: 8, padding: 2 }}>
+                <button onClick={() => setMsgFilter("chat")} style={{
+                  padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "DM Sans", fontSize: 11,
+                  background: msgFilter === "chat" ? T.accent : "transparent", color: msgFilter === "chat" ? T.bg : T.muted,
+                }} type="button">Chat</button>
+                <button onClick={() => setMsgFilter("checkin")} style={{
+                  padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "DM Sans", fontSize: 11,
+                  background: msgFilter === "checkin" ? T.accent : "transparent", color: msgFilter === "checkin" ? T.bg : T.muted,
+                }} type="button">Check-in notes</button>
+              </div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
                 <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
               </div>
@@ -1904,12 +1922,15 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                 </div>
               ) : messages.map((m) => {
                 const isCoach = m.fromId !== activeId;
+                const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
                 return (
                   <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
                     <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 10, color: isCoach ? `${T.bg}aa` : T.muted, marginBottom: 2 }}>{senderName}</div>
                       <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
                       <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
                         {m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                        {m.messageType === "broadcast" && " · 📢 Announcement"}
                       </div>
                     </div>
                   </div>

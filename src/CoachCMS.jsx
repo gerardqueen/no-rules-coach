@@ -1759,8 +1759,7 @@ function AdminCoachOverview({ token, myId }) {
    Coach Inbox — unified view of all athlete conversations
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachInbox({ athletes, token, onBroadcast }) {
-  const [activeId, setActiveId] = useState(null);
-  const [msgFilter, setMsgFilter] = useState("chat"); // "chat" | "checkin"
+  const [activeId, setActiveId] = useState(null); // "athleteId-chat" or "athleteId-checkin"
   const [messages, setMessages] = useState([]);
   const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
   const [input, setInput] = useState("");
@@ -1783,7 +1782,10 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     return () => clearInterval(interval);
   }, [token]);
 
-  // Load chat for active athlete (filter by type: chat or checkin)
+  const msgFilter = activeId && String(activeId).endsWith("-checkin") ? "checkin" : "chat";
+  const athleteIdFromActive = activeId ? parseInt(String(activeId).replace(/-checkin$/, "").replace(/-chat$/, ""), 10) : null;
+
+  // Load chat for active athlete (filter by type from thread id)
   const loadChat = async (aid) => {
     if (!aid) return;
     setLoadingChat(true);
@@ -1797,20 +1799,20 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     setLoadingChat(false);
   };
 
-  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId, msgFilter]);
+  useEffect(() => { if (athleteIdFromActive) loadChat(athleteIdFromActive); }, [activeId, athleteIdFromActive, msgFilter]);
   // Poll active chat
   useEffect(() => {
-    if (!activeId) return;
-    const interval = setInterval(() => loadChat(activeId), 12 * 1000);
+    if (!athleteIdFromActive) return;
+    const interval = setInterval(() => loadChat(athleteIdFromActive), 12 * 1000);
     return () => clearInterval(interval);
-  }, [activeId]);
+  }, [activeId, athleteIdFromActive]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async () => {
-    if (!input.trim() || !activeId || sending) return;
+    if (!input.trim() || !athleteIdFromActive || sending) return;
     setSending(true);
     try {
-      const msg = await apiFetch(`/messages/${activeId}`, token, {
+      const msg = await apiFetch(`/messages/${athleteIdFromActive}`, token, {
         method: "POST", body: JSON.stringify({
           content: input.trim(),
           messageType: msgFilter === "checkin" ? "checkin" : "chat",
@@ -1823,14 +1825,19 @@ function CoachInbox({ athletes, token, onBroadcast }) {
   };
 
   const totalUnread = Object.values(unreadMap).reduce((s, c) => s + c, 0);
-  const activeAthlete = athletes.find(a => a.id === activeId);
+  const activeAthlete = athletes.find(a => a.id === athleteIdFromActive);
 
-  // Sort athletes: unread first, then alphabetical
+  // Two threads per athlete: Chat and Check-ins (separate conversations)
   const sorted = [...athletes].sort((a, b) => {
     const ua = unreadMap[a.id] || 0, ub = unreadMap[b.id] || 0;
     if (ua > 0 && ub === 0) return -1;
     if (ub > 0 && ua === 0) return 1;
     return a.name.localeCompare(b.name);
+  });
+  const threadList = [];
+  sorted.forEach((a) => {
+    threadList.push({ id: `${a.id}-chat`, athleteId: a.id, name: a.name, sub: "Chat", avatar: a.avatar, avatarColor: a.avatarColor, unread: unreadMap[a.id] || 0 });
+    threadList.push({ id: `${a.id}-checkin`, athleteId: a.id, name: a.name, sub: "Check-in notes", avatar: a.avatar, avatarColor: a.avatarColor, unread: 0 });
   });
 
   return (
@@ -1840,7 +1847,7 @@ function CoachInbox({ athletes, token, onBroadcast }) {
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MESSAGES</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{athletes.length} athlete{athletes.length !== 1 ? "s" : ""}</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{threadList.length} conversations</div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             {totalUnread > 0 && (
@@ -1854,27 +1861,26 @@ function CoachInbox({ athletes, token, onBroadcast }) {
         </div>
 
         <div style={{ overflowY: "auto", flex: 1 }}>
-          {sorted.map((a, idx) => {
-            const unread = unreadMap[a.id] || 0;
-            const isActive = activeId === a.id;
+          {threadList.map((t, idx) => {
+            const isActive = activeId === t.id;
             return (
-              <div key={a.id} onClick={() => { setActiveId(a.id); setInput(""); }} style={{
-                padding: "12px 18px", borderBottom: idx < sorted.length - 1 ? `1px solid ${T.border}` : "none",
-                background: isActive ? T.surface : unread > 0 ? `${T.coachGreen}08` : "transparent",
+              <div key={t.id} onClick={() => { setActiveId(t.id); setInput(""); }} style={{
+                padding: "12px 18px", borderBottom: idx < threadList.length - 1 ? `1px solid ${T.border}` : "none",
+                background: isActive ? T.surface : t.unread > 0 ? `${T.coachGreen}08` : "transparent",
                 cursor: "pointer", display: "flex", gap: 10, alignItems: "center", transition: "background .15s",
               }}
                 onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = T.surface; }}
-                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = unread > 0 ? `${T.coachGreen}08` : "transparent"; }}
+                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = t.unread > 0 ? `${T.coachGreen}08` : "transparent"; }}
               >
-                {unread > 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: T.coachGreen, borderRadius: "4px 0 0 4px" }} />}
-                <Avatar initials={a.avatar || initialsOf(a.name)} color={a.avatarColor || T.accent} size={36} />
+                {t.unread > 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: T.coachGreen, borderRadius: "4px 0 0 4px" }} />}
+                <Avatar initials={t.avatar || initialsOf(t.name)} color={t.avatarColor || T.accent} size={36} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: unread > 0 ? 700 : 500, color: T.text }}>{a.name}</div>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{a.sport || "Athlete"}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: t.unread > 0 ? 700 : 500, color: T.text }}>{t.name}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{t.sub}</div>
                 </div>
-                {unread > 0 && (
+                {t.unread > 0 && (
                   <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{unread}</span>
+                    <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{t.unread}</span>
                   </div>
                 )}
               </div>
@@ -1898,17 +1904,8 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                 <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div>
                 <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live</div>
               </div>
-              <div style={{ display: "flex", gap: 4, background: T.surface, borderRadius: 8, padding: 2 }}>
-                <button onClick={() => setMsgFilter("chat")} style={{
-                  padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "DM Sans", fontSize: 11,
-                  background: msgFilter === "chat" ? T.accent : "transparent", color: msgFilter === "chat" ? T.bg : T.muted,
-                }} type="button">Chat</button>
-                <button onClick={() => setMsgFilter("checkin")} style={{
-                  padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontFamily: "DM Sans", fontSize: 11,
-                  background: msgFilter === "checkin" ? T.accent : "transparent", color: msgFilter === "checkin" ? T.bg : T.muted,
-                }} type="button">Check-in notes</button>
-              </div>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{msgFilter === "checkin" ? "Check-in notes" : "Chat"}</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
                 <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
               </div>
@@ -1921,7 +1918,7 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                   No messages yet. Start the conversation with {activeAthlete?.name}!
                 </div>
               ) : messages.map((m) => {
-                const isCoach = m.fromId !== activeId;
+                const isCoach = m.fromId !== athleteIdFromActive;
                 const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
                 return (
                   <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>

@@ -1759,15 +1759,14 @@ function AdminCoachOverview({ token, myId }) {
    Coach Inbox — unified view of all athlete conversations
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachInbox({ athletes, token, onBroadcast }) {
-  const [activeId, setActiveId] = useState(null); // "athleteId-chat" or "athleteId-checkin"
+  const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
+  const [unreadMap, setUnreadMap] = useState({});
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
   const bottomRef = useRef(null);
 
-  // Load unread counts
   const loadUnread = async () => {
     try {
       const rows = await apiFetch("/messages-unread", token);
@@ -1777,46 +1776,29 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     } catch {}
   };
   useEffect(() => { loadUnread(); }, [token]);
-  useEffect(() => {
-    const interval = setInterval(loadUnread, 15 * 1000);
-    return () => clearInterval(interval);
-  }, [token]);
+  useEffect(() => { const i = setInterval(loadUnread, 15000); return () => clearInterval(i); }, [token]);
 
-  const msgFilter = activeId && String(activeId).endsWith("-checkin") ? "checkin" : "chat";
-  const athleteIdFromActive = activeId ? parseInt(String(activeId).replace(/-checkin$/, "").replace(/-chat$/, ""), 10) : null;
-
-  // Load chat for active athlete (filter by type from thread id)
   const loadChat = async (aid) => {
     if (!aid) return;
     setLoadingChat(true);
     try {
-      const url = msgFilter === "checkin" ? `/messages/${aid}?type=checkin` : `/messages/${aid}?type=chat`;
-      const msgs = await apiFetch(url, token);
+      const msgs = await apiFetch(`/messages/${aid}`, token);
       if (Array.isArray(msgs)) setMessages(msgs);
-      // Clear unread for this athlete
       setUnreadMap(prev => ({ ...prev, [aid]: 0 }));
     } catch { setMessages([]); }
     setLoadingChat(false);
   };
 
-  useEffect(() => { if (athleteIdFromActive) loadChat(athleteIdFromActive); }, [activeId, athleteIdFromActive, msgFilter]);
-  // Poll active chat
-  useEffect(() => {
-    if (!athleteIdFromActive) return;
-    const interval = setInterval(() => loadChat(athleteIdFromActive), 12 * 1000);
-    return () => clearInterval(interval);
-  }, [activeId, athleteIdFromActive]);
+  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId]);
+  useEffect(() => { if (!activeId) return; const i = setInterval(() => loadChat(activeId), 12000); return () => clearInterval(i); }, [activeId]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async () => {
-    if (!input.trim() || !athleteIdFromActive || sending) return;
+    if (!input.trim() || !activeId || sending) return;
     setSending(true);
     try {
-      const msg = await apiFetch(`/messages/${athleteIdFromActive}`, token, {
-        method: "POST", body: JSON.stringify({
-          content: input.trim(),
-          messageType: msgFilter === "checkin" ? "checkin" : "chat",
-        }),
+      const msg = await apiFetch(`/messages/${activeId}`, token, {
+        method: "POST", body: JSON.stringify({ content: input.trim() }),
       });
       setMessages(prev => [...prev, msg]);
       setInput("");
@@ -1825,129 +1807,83 @@ function CoachInbox({ athletes, token, onBroadcast }) {
   };
 
   const totalUnread = Object.values(unreadMap).reduce((s, c) => s + c, 0);
-  const activeAthlete = athletes.find(a => a.id === athleteIdFromActive);
-
-  // Two threads per athlete: Chat and Check-ins (separate conversations)
+  const activeAthlete = athletes.find(a => a.id === activeId);
   const sorted = [...athletes].sort((a, b) => {
     const ua = unreadMap[a.id] || 0, ub = unreadMap[b.id] || 0;
     if (ua > 0 && ub === 0) return -1;
     if (ub > 0 && ua === 0) return 1;
     return a.name.localeCompare(b.name);
   });
-  const threadList = [];
-  sorted.forEach((a) => {
-    threadList.push({ id: `${a.id}-chat`, athleteId: a.id, name: a.name, sub: "Chat", avatar: a.avatar, avatarColor: a.avatarColor, unread: unreadMap[a.id] || 0 });
-    threadList.push({ id: `${a.id}-checkin`, athleteId: a.id, name: a.name, sub: "Check-in notes", avatar: a.avatar, avatarColor: a.avatarColor, unread: 0 });
-  });
 
   return (
     <div style={{ display: "flex", height: "calc(100vh - 140px)", borderRadius: 20, overflow: "hidden", border: `1px solid ${T.border}`, background: T.bg }}>
-      {/* ── LEFT: Thread list ── */}
+      {/* Thread list */}
       <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MESSAGES</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{threadList.length} conversations</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{athletes.length} athlete{athletes.length !== 1 ? "s" : ""}</div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {totalUnread > 0 && (
-              <div style={{ background: T.danger, borderRadius: 10, padding: "2px 8px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: "#fff", fontWeight: 700 }}>{totalUnread}</div>
-            )}
-            <button onClick={onBroadcast} style={{
-              background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 8px",
-              color: T.accent, fontFamily: "DM Sans", fontSize: 9, cursor: "pointer",
-            }} type="button">📢 All</button>
+            {totalUnread > 0 && <div style={{ background: T.danger, borderRadius: 10, padding: "2px 8px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: "#fff", fontWeight: 700 }}>{totalUnread}</div>}
+            <button onClick={onBroadcast} style={{ background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 8px", color: T.accent, fontFamily: "DM Sans", fontSize: 9, cursor: "pointer" }} type="button">📢 All</button>
           </div>
         </div>
-
         <div style={{ overflowY: "auto", flex: 1 }}>
-          {threadList.map((t, idx) => {
-            const isActive = activeId === t.id;
+          {sorted.map((a, idx) => {
+            const unread = unreadMap[a.id] || 0;
+            const isActive = activeId === a.id;
             return (
-              <div key={t.id} onClick={() => { setActiveId(t.id); setInput(""); }} style={{
-                padding: "12px 18px", borderBottom: idx < threadList.length - 1 ? `1px solid ${T.border}` : "none",
-                background: isActive ? T.surface : t.unread > 0 ? `${T.coachGreen}08` : "transparent",
-                cursor: "pointer", display: "flex", gap: 10, alignItems: "center", transition: "background .15s",
-              }}
-                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = T.surface; }}
-                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = t.unread > 0 ? `${T.coachGreen}08` : "transparent"; }}
-              >
-                {t.unread > 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: T.coachGreen, borderRadius: "4px 0 0 4px" }} />}
-                <Avatar initials={t.avatar || initialsOf(t.name)} color={t.avatarColor || T.accent} size={36} />
+              <div key={a.id} onClick={() => { setActiveId(a.id); setInput(""); }} style={{
+                padding: "12px 18px", borderBottom: idx < sorted.length - 1 ? `1px solid ${T.border}` : "none",
+                background: isActive ? T.surface : unread > 0 ? `${T.coachGreen}08` : "transparent",
+                cursor: "pointer", display: "flex", gap: 10, alignItems: "center",
+              }}>
+                <Avatar initials={a.avatar || initialsOf(a.name)} color={a.avatarColor || T.accent} size={36} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: t.unread > 0 ? 700 : 500, color: T.text }}>{t.name}</div>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{t.sub}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: unread > 0 ? 700 : 500, color: T.text }}>{a.name}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{a.sport || "Athlete"}</div>
                 </div>
-                {t.unread > 0 && (
-                  <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{t.unread}</span>
-                  </div>
-                )}
+                {unread > 0 && <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{unread}</span></div>}
               </div>
             );
           })}
         </div>
       </div>
-
-      {/* ── RIGHT: Active chat ── */}
+      {/* Chat panel */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
         {!activeId ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
             <div style={{ fontSize: 40, opacity: 0.3 }}>💬</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to start messaging</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to message</div>
           </div>
         ) : (
           <>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
               <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live</div>
-              </div>
-              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{msgFilter === "checkin" ? "Check-in notes" : "Chat"}</div>
-              <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
-                <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
-              </div>
+              <div><div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div><div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport} · Live</div></div>
+              <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} /><span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span></div>
             </div>
-
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
               {loadingChat ? <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>Loading…</div> :
-               messages.length === 0 ? (
-                <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>
-                  No messages yet. Start the conversation with {activeAthlete?.name}!
-                </div>
-              ) : messages.map((m) => {
-                const isCoach = m.fromId !== athleteIdFromActive;
-                const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
+               messages.length === 0 ? <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>No messages yet. Start the conversation!</div> :
+               messages.map((m) => {
+                const isCoach = m.fromId !== activeId;
                 return (
                   <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
                     <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
-                      <div style={{ fontFamily: "DM Sans", fontSize: 10, color: isCoach ? `${T.bg}aa` : T.muted, marginBottom: 2 }}>{senderName}</div>
                       <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
-                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
-                        {m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
-                        {m.messageType === "broadcast" && " · 📢 Announcement"}
-                      </div>
+                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? T.bg + "88" : T.muted, marginTop: 4, textAlign: "right" }}>{m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</div>
                     </div>
                   </div>
                 );
               })}
               <div ref={bottomRef} />
             </div>
-
             <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <input value={input} onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && send()}
-                placeholder={`Message ${activeAthlete?.name}…`}
-                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
-              />
-              <button onClick={send} disabled={sending || !input.trim()} style={{
-                background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted,
-                border: "none", borderRadius: 10, padding: "10px 16px",
-                fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
-                cursor: input.trim() ? "pointer" : "default",
-              }} type="button">{sending ? "…" : "SEND"}</button>
+              <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${activeAthlete?.name}…`}
+                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }} />
+              <button onClick={send} disabled={sending || !input.trim()} style={{ background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted, border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() ? "pointer" : "default" }} type="button">{sending ? "…" : "SEND"}</button>
             </div>
           </>
         )}

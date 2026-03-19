@@ -2136,6 +2136,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
     { id: "calendar", label: "CALENDAR" },
+    { id: "videos", label: "VIDEOS" },
   ];
 
   return (
@@ -2503,6 +2504,148 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "calendar" && (
         <AthleteCalendarManager athleteId={athlete.id} token={token} />
+      )}
+      {tab === "videos" && (
+        <CoachVideoManager athleteId={athlete.id} token={token} />
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Coach Video Manager — add/remove YouTube videos for an athlete
+────────────────────────────────────────────────────────────────────────────── */
+function CoachVideoManager({ athleteId, token }) {
+  const [videos, setVideos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ title: "", youtubeUrl: "", category: "General" });
+  const [saving, setSaving] = useState(false);
+
+  const VIDEO_CATEGORIES = ["General", "Nutrition", "Training", "Recovery", "Mindset"];
+
+  const loadVideos = async () => {
+    try {
+      const rows = await apiFetch(`/coach-videos/${athleteId}`, token);
+      setVideos(Array.isArray(rows) ? rows : []);
+    } catch { setVideos([]); }
+  };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => { setLoading(true); await loadVideos(); setLoading(false); })();
+  }, [athleteId, token]);
+
+  const addVideo = async () => {
+    if (!form.title.trim() || !form.youtubeUrl.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch("/coach-videos", token, {
+        method: "POST",
+        body: JSON.stringify({ title: form.title.trim(), youtubeUrl: form.youtubeUrl.trim(), category: form.category, athleteId }),
+      });
+      setForm({ title: "", youtubeUrl: "", category: "General" });
+      await loadVideos();
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+
+  const addVideoForAll = async () => {
+    if (!form.title.trim() || !form.youtubeUrl.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch("/coach-videos", token, {
+        method: "POST",
+        body: JSON.stringify({ title: form.title.trim(), youtubeUrl: form.youtubeUrl.trim(), category: form.category, athleteId: null }),
+      });
+      setForm({ title: "", youtubeUrl: "", category: "General" });
+      await loadVideos();
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+
+  const deleteVideo = async (id) => {
+    try {
+      await apiFetch(`/coach-videos/${id}`, token, { method: "DELETE" });
+      await loadVideos();
+    } catch (e) { alert(e.message); }
+  };
+
+  // Extract YouTube ID for thumbnail preview
+  const extractYtId = (url) => {
+    const m = (url || "").match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
+    return m ? m[1] : null;
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>YOUTUBE VIDEOS</div>
+
+      {/* Add video form */}
+      <div style={{ display: "grid", gridTemplateColumns: "2fr 3fr 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
+        <div>
+          <label style={labelStyle}>Title</label>
+          <input value={form.title} onChange={e => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Hitting Your Protein Target" style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>YouTube URL</label>
+          <input value={form.youtubeUrl} onChange={e => setForm(p => ({...p, youtubeUrl: e.target.value}))} placeholder="https://youtube.com/watch?v=..." style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Category</label>
+          <select value={form.category} onChange={e => setForm(p => ({...p, category: e.target.value}))} style={{...inputStyle, cursor: "pointer"}}>
+            {VIDEO_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+      {/* Preview */}
+      {extractYtId(form.youtubeUrl) && (
+        <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
+          <img src={`https://img.youtube.com/vi/${extractYtId(form.youtubeUrl)}/default.jpg`} alt="preview" style={{ width: 60, height: 45, borderRadius: 6, objectFit: "cover" }} />
+          <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>✓ Valid YouTube link detected</span>
+        </div>
+      )}
+      {/* Buttons */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={addVideo} disabled={saving || !form.title.trim() || !form.youtubeUrl.trim()} style={{
+          background: form.title.trim() && form.youtubeUrl.trim() ? T.accent : T.border,
+          color: form.title.trim() && form.youtubeUrl.trim() ? T.bg : T.muted,
+          border: "none", borderRadius: 10, padding: "10px 16px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5,
+          cursor: form.title.trim() && form.youtubeUrl.trim() && !saving ? "pointer" : "default",
+        }} type="button">{saving ? "…" : "ADD FOR THIS ATHLETE"}</button>
+        <button onClick={addVideoForAll} disabled={saving || !form.title.trim() || !form.youtubeUrl.trim()} style={{
+          background: form.title.trim() && form.youtubeUrl.trim() ? T.coachGreen : T.border,
+          color: form.title.trim() && form.youtubeUrl.trim() ? "#fff" : T.muted,
+          border: "none", borderRadius: 10, padding: "10px 16px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5,
+          cursor: form.title.trim() && form.youtubeUrl.trim() && !saving ? "pointer" : "default",
+        }} type="button">{saving ? "…" : "ADD FOR ALL ATHLETES"}</button>
+      </div>
+
+      {/* Video list */}
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : videos.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>No videos yet. Add a YouTube link above.</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {videos.map(v => {
+            const ytId = v.youtube_id || extractYtId(v.youtube_url);
+            const isGlobal = !v.athlete_id;
+            return (
+              <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 12px", background: T.surface, borderRadius: 10 }}>
+                {ytId && <img src={`https://img.youtube.com/vi/${ytId}/default.jpg`} alt="" style={{ width: 80, height: 45, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: T.text }}>{v.title}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3 }}>
+                    <span style={{ background: (isGlobal ? T.coachGreen : T.accent) + "22", color: isGlobal ? T.coachGreen : T.accent, borderRadius: 4, padding: "1px 6px", fontFamily: "DM Sans", fontSize: 9, fontWeight: 600 }}>{isGlobal ? "ALL ATHLETES" : "THIS ATHLETE"}</span>
+                    <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>{v.category}</span>
+                    {v.created_at && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted }}>{new Date(v.created_at).toLocaleDateString('en-GB', { day: "numeric", month: "short" })}</span>}
+                  </div>
+                </div>
+                <button onClick={() => deleteVideo(v.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

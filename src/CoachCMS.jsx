@@ -1806,12 +1806,16 @@ function AdminCoachOverview({ token, myId }) {
    Coach Inbox — unified view of all athlete conversations
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachInbox({ athletes, token, onBroadcast }) {
-  const [activeId, setActiveId] = useState(null);
+  const [activeAthleteId, setActiveAthleteId] = useState(null);
+  const [threadList, setThreadList] = useState([]);
+  const [activeThread, setActiveThread] = useState(null); // { threadId, subject }
   const [messages, setMessages] = useState([]);
   const [unreadMap, setUnreadMap] = useState({});
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
+  const [view, setView] = useState("athletes"); // "athletes" | "threads" | "thread" | "compose"
+  const [composeSubject, setComposeSubject] = useState("");
   const bottomRef = useRef(null);
 
   const loadUnread = async () => {
@@ -1825,36 +1829,82 @@ function CoachInbox({ athletes, token, onBroadcast }) {
   useEffect(() => { loadUnread(); }, [token]);
   useEffect(() => { const i = setInterval(loadUnread, 15000); return () => clearInterval(i); }, [token]);
 
-  const loadChat = async (aid) => {
+  // Load threads for selected athlete
+  const loadThreads = async (aid) => {
     if (!aid) return;
+    try {
+      const rows = await apiFetch(`/messages/threads/${aid}`, token);
+      if (Array.isArray(rows)) setThreadList(rows);
+    } catch { setThreadList([]); }
+  };
+
+  const selectAthlete = (aid) => {
+    setActiveAthleteId(aid);
+    setActiveThread(null);
+    setView("threads");
+    setInput("");
+    loadThreads(aid);
+  };
+
+  // Load messages for a specific thread
+  const openThread = async (thread) => {
+    setActiveThread(thread);
+    setView("thread");
+    setInput("");
     setLoadingChat(true);
     try {
-      const msgs = await apiFetch(`/messages/${aid}`, token);
+      const msgs = await apiFetch(`/messages/thread/${activeAthleteId}/${thread.threadId}`, token);
       if (Array.isArray(msgs)) setMessages(msgs);
-      setUnreadMap(prev => ({ ...prev, [aid]: 0 }));
+      setUnreadMap(prev => ({ ...prev, [activeAthleteId]: Math.max(0, (prev[activeAthleteId] || 0) - (thread.unreadCount || 0)) }));
     } catch { setMessages([]); }
     setLoadingChat(false);
   };
 
-  useEffect(() => { if (activeId) loadChat(activeId); }, [activeId]);
-  useEffect(() => { if (!activeId) return; const i = setInterval(() => loadChat(activeId), 12000); return () => clearInterval(i); }, [activeId]);
+  // Poll active thread
+  useEffect(() => {
+    if (view !== "thread" || !activeThread || !activeAthleteId) return;
+    const i = setInterval(async () => {
+      try {
+        const msgs = await apiFetch(`/messages/thread/${activeAthleteId}/${activeThread.threadId}`, token);
+        if (Array.isArray(msgs)) setMessages(msgs);
+      } catch {}
+    }, 10000);
+    return () => clearInterval(i);
+  }, [view, activeThread?.threadId, activeAthleteId]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async () => {
-    if (!input.trim() || !activeId || sending) return;
+    if (!input.trim() || !activeAthleteId || sending) return;
     setSending(true);
     try {
-      const msg = await apiFetch(`/messages/${activeId}`, token, {
-        method: "POST", body: JSON.stringify({ content: input.trim() }),
+      const body = { content: input.trim() };
+      if (view === "compose") {
+        if (!composeSubject.trim()) { setSending(false); return; }
+        body.subject = composeSubject.trim();
+      } else if (activeThread) {
+        body.threadId = activeThread.threadId;
+        body.subject = activeThread.subject;
+      }
+      const msg = await apiFetch(`/messages/${activeAthleteId}`, token, {
+        method: "POST", body: JSON.stringify(body),
       });
-      setMessages(prev => [...prev, msg]);
+      if (view === "compose") {
+        // Switch to thread view
+        await loadThreads(activeAthleteId);
+        setActiveThread({ threadId: msg.threadId, subject: msg.subject || composeSubject.trim() });
+        setMessages([msg]);
+        setView("thread");
+        setComposeSubject("");
+      } else {
+        setMessages(prev => [...prev, msg]);
+      }
       setInput("");
     } catch (e) { alert(e.message); }
     setSending(false);
   };
 
   const totalUnread = Object.values(unreadMap).reduce((s, c) => s + c, 0);
-  const activeAthlete = athletes.find(a => a.id === activeId);
+  const activeAthlete = athletes.find(a => a.id === activeAthleteId);
   const sorted = [...athletes].sort((a, b) => {
     const ua = unreadMap[a.id] || 0, ub = unreadMap[b.id] || 0;
     if (ua > 0 && ub === 0) return -1;
@@ -1864,8 +1914,8 @@ function CoachInbox({ athletes, token, onBroadcast }) {
 
   return (
     <div style={{ display: "flex", height: "calc(100vh - 140px)", borderRadius: 20, overflow: "hidden", border: `1px solid ${T.border}`, background: T.bg }}>
-      {/* Thread list */}
-      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
+      {/* Athlete list */}
+      <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MESSAGES</div>
@@ -1879,9 +1929,9 @@ function CoachInbox({ athletes, token, onBroadcast }) {
         <div style={{ overflowY: "auto", flex: 1 }}>
           {sorted.map((a, idx) => {
             const unread = unreadMap[a.id] || 0;
-            const isActive = activeId === a.id;
+            const isActive = activeAthleteId === a.id;
             return (
-              <div key={a.id} onClick={() => { setActiveId(a.id); setInput(""); }} style={{
+              <div key={a.id} onClick={() => selectAthlete(a.id)} style={{
                 padding: "12px 18px", borderBottom: idx < sorted.length - 1 ? `1px solid ${T.border}` : "none",
                 background: isActive ? T.surface : unread > 0 ? `${T.coachGreen}08` : "transparent",
                 cursor: "pointer", display: "flex", gap: 10, alignItems: "center",
@@ -1897,30 +1947,106 @@ function CoachInbox({ athletes, token, onBroadcast }) {
           })}
         </div>
       </div>
-      {/* Chat panel */}
+      {/* Main panel */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        {!activeId ? (
+        {/* No athlete selected */}
+        {view === "athletes" && (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 40, opacity: 0.3 }}>💬</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to message</div>
+            <div style={{ fontSize: 40, opacity: 0.3 }}>✉</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to view threads</div>
           </div>
-        ) : (
+        )}
+
+        {/* Thread list for selected athlete */}
+        {view === "threads" && activeAthlete && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
+                <div><div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div><div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{threadList.length} thread{threadList.length !== 1 ? "s" : ""}</div></div>
+              </div>
+              <button onClick={() => { setView("compose"); setComposeSubject(""); setInput(""); }} style={{
+                background: T.accent, color: T.bg, border: "none", borderRadius: 8,
+                padding: "6px 12px", fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1, cursor: "pointer",
+              }}>✉ NEW THREAD</button>
+            </div>
+            <div style={{ flex: 1, overflowY: "auto" }}>
+              {threadList.length === 0 ? (
+                <div style={{ textAlign: "center", padding: 40, color: T.muted, fontFamily: "DM Sans", fontSize: 12 }}>No threads yet. Start a new conversation.</div>
+              ) : threadList.map((t, idx) => {
+                const hasUnread = (t.unreadCount || 0) > 0;
+                return (
+                  <div key={t.threadId} onClick={() => openThread(t)} style={{
+                    padding: "14px 20px", borderBottom: `1px solid ${T.border}15`,
+                    background: hasUnread ? `${T.accent}06` : "transparent", cursor: "pointer",
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: hasUnread ? 700 : 500, color: T.text }}>{t.subject || "General"}</span>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        {hasUnread && <div style={{ background: T.accent, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.bg, fontWeight: 700 }}>{t.unreadCount}</span></div>}
+                        {t.lastAt && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted }}>{new Date(t.lastAt).toLocaleDateString('en-GB', { day: "numeric", month: "short" })}</span>}
+                      </div>
+                    </div>
+                    <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.lastMessage}</div>
+                    <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.border, marginTop: 3 }}>{t.messageCount} message{t.messageCount !== 1 ? "s" : ""}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Compose new thread */}
+        {view === "compose" && activeAthlete && (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => setView("threads")} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, padding: 0 }}>←</button>
+              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>NEW MESSAGE TO {activeAthlete.name.toUpperCase()}</div>
+            </div>
+            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
+              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Subject</div>
+              <input value={composeSubject} onChange={e => setComposeSubject(e.target.value)} placeholder="e.g. Weekly check-in, Macro adjustment, Training update…"
+                style={{ width: "100%", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 13, outline: "none" }} />
+            </div>
+            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <div style={{ textAlign: "center", color: T.muted }}><div style={{ fontSize: 32, marginBottom: 8 }}>✉</div><div style={{ fontFamily: "DM Sans", fontSize: 12 }}>Write your message below</div></div>
+            </div>
+            <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
+              <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Write your message…"
+                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }} />
+              <button onClick={send} disabled={sending || !input.trim() || !composeSubject.trim()} style={{
+                background: input.trim() && composeSubject.trim() ? T.accent : T.border, color: input.trim() && composeSubject.trim() ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() && composeSubject.trim() ? "pointer" : "default",
+              }} type="button">{sending ? "…" : "SEND"}</button>
+            </div>
+          </div>
+        )}
+
+        {/* Thread messages */}
+        {view === "thread" && activeThread && (
           <>
             <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
-              <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
-              <div><div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div><div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport} · Live</div></div>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 4, alignItems: "center" }}><div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} /><span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span></div>
+              <button onClick={() => { setView("threads"); loadThreads(activeAthleteId); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, padding: 0 }}>←</button>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeThread.subject || "General"}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>with {activeAthlete?.name} · {messages.length} message{messages.length !== 1 ? "s" : ""}</div>
+              </div>
             </div>
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
               {loadingChat ? <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>Loading…</div> :
-               messages.length === 0 ? <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>No messages yet. Start the conversation!</div> :
-               messages.map((m) => {
-                const isCoach = m.fromId !== activeId;
+               messages.length === 0 ? <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>No messages yet</div> :
+               messages.map((m, i) => {
+                const isCoach = m.fromId !== activeAthleteId;
+                const showDate = i === 0 || new Date(m.created_at).toDateString() !== new Date(messages[i-1]?.created_at).toDateString();
                 return (
-                  <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                    <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
-                      <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
-                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? T.bg + "88" : T.muted, marginTop: 4, textAlign: "right" }}>{m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                  <div key={m.id || i}>
+                    {showDate && <div style={{ textAlign: "center", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted, margin: "12px 0", padding: "4px 12px", background: T.surface, borderRadius: 20, display: "inline-block", position: "relative", left: "50%", transform: "translateX(-50%)" }}>{new Date(m.created_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>}
+                    <div style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                      <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
+                        {!isCoach && m.fromName && <div style={{ fontFamily: "DM Sans", fontSize: 10, fontWeight: 700, color: T.coachGreen, marginBottom: 4 }}>{m.fromName}</div>}
+                        <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{m.content}</div>
+                        <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? T.bg + "88" : T.muted, marginTop: 4, textAlign: "right" }}>{m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1928,9 +2054,9 @@ function CoachInbox({ athletes, token, onBroadcast }) {
               <div ref={bottomRef} />
             </div>
             <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder={`Message ${activeAthlete?.name}…`}
+              <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Reply…"
                 style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }} />
-              <button onClick={send} disabled={sending || !input.trim()} style={{ background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted, border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() ? "pointer" : "default" }} type="button">{sending ? "…" : "SEND"}</button>
+              <button onClick={send} disabled={sending || !input.trim()} style={{ background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted, border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() ? "pointer" : "default" }} type="button">{sending ? "…" : "REPLY"}</button>
             </div>
           </>
         )}

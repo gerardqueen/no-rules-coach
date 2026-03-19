@@ -37,6 +37,15 @@ const T = {
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
+const CAL_TYPES = [
+  { id: "checkin", label: "Check-In", color: "#22c55e", icon: "✅" },
+  { id: "nutrition", label: "Nutrition Plan", color: "#FF9A52", icon: "🥗" },
+  { id: "training", label: "Training", color: "#3b82f6", icon: "🏋️" },
+  { id: "competition", label: "Competition", color: "#ef4444", icon: "🏆" },
+  { id: "meal_prep", label: "Meal Prep", color: "#a855f7", icon: "🍱" },
+  { id: "reminder", label: "Reminder", color: "#f59e0b", icon: "🔔" },
+];
+
 /**
  * Logo: embedded SVG so it never depends on a removed file.
  * (If you want your original logo image, you can swap this string with your own base64.)
@@ -1065,13 +1074,30 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
 function AthleteCalendarManager({ athleteId, token }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", title: "", notes: "" });
+  const [form, setForm] = useState({ date: "", title: "", notes: "", type: "checkin" });
   const [saving, setSaving] = useState(false);
+
+  // Parse [type:xxx] prefix from notes to reconstruct event type
+  const parseEventType = (ev) => {
+    const notes = ev.notes || "";
+    const typeMatch = notes.match(/^\[type:(\w+)\]/);
+    return {
+      ...ev,
+      type: typeMatch ? typeMatch[1] : (
+        (ev.title || "").toLowerCase().includes("check") ? "checkin" :
+        (ev.title || "").toLowerCase().includes("train") ? "training" :
+        (ev.title || "").toLowerCase().includes("comp") ? "competition" :
+        "reminder"
+      ),
+      notes: typeMatch ? notes.replace(/^\[type:\w+\]/, "") : notes,
+    };
+  };
+  const getType = (id) => CAL_TYPES.find(t => t.id === id) || CAL_TYPES[5];
 
   const loadEvents = async () => {
     try {
       const rows = await apiFetch(`/calendar-events/${athleteId}`, token);
-      setEvents(Array.isArray(rows) ? rows : []);
+      setEvents(Array.isArray(rows) ? rows.map(parseEventType) : []);
     } catch { setEvents([]); }
   };
 
@@ -1088,11 +1114,13 @@ function AthleteCalendarManager({ athleteId, token }) {
     if (!form.date || !form.title.trim()) return;
     setSaving(true);
     try {
+      // Encode type in notes prefix for persistence
+      const notesWithType = `[type:${form.type}]${form.notes || ''}`;
       await apiFetch(`/calendar-events/${athleteId}`, token, {
         method: "POST",
-        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: form.notes }),
+        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: notesWithType }),
       });
-      setForm({ date: "", title: "", notes: "" });
+      setForm({ date: "", title: "", notes: "", type: "checkin" });
       await loadEvents();
     } catch (e) { alert(e.message); }
     setSaving(false);
@@ -1110,10 +1138,22 @@ function AthleteCalendarManager({ athleteId, token }) {
       <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>CALENDAR EVENTS</div>
 
       {/* Add event form */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
         <div>
           <label style={labelStyle}>Date</label>
           <input type="date" value={form.date} onChange={(e) => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
+        </div>
+        <div>
+          <label style={labelStyle}>Type</label>
+          <select
+            value={form.type}
+            onChange={(e) => setForm(p => ({...p, type: e.target.value}))}
+            style={{ ...inputStyle, cursor: "pointer" }}
+          >
+            {CAL_TYPES.map(t => (
+              <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
+            ))}
+          </select>
         </div>
         <div>
           <label style={labelStyle}>Title</label>
@@ -1136,16 +1176,23 @@ function AthleteCalendarManager({ athleteId, token }) {
         <div style={{ color: T.muted, fontSize: 12 }}>No calendar events yet. Add one above.</div>
       ) : (
         <div style={{ maxHeight: 300, overflowY: "auto" }}>
-          {events.map((ev) => (
-            <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
-              <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
-                {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
+          {events.map((ev) => {
+            const evType = getType(ev.type);
+            return (
+              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
+                <span style={{ fontSize: 16, flexShrink: 0 }}>{evType.icon}</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: evType.color, whiteSpace: "nowrap" }}>{ev.date}</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
+                    <span style={{ fontSize: 9, color: evType.color, background: evType.color + "22", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>{evType.label.toUpperCase()}</span>
+                    {ev.notes && <span style={{ fontSize: 11, color: T.muted }}>{ev.notes}</span>}
+                  </div>
+                </div>
+                <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
               </div>
-              <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

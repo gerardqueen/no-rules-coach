@@ -2132,6 +2132,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
+    { id: "checkin-notes", label: "CHECK-IN NOTES" },
     { id: "messages", label: "MESSAGES" },
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
@@ -2487,6 +2488,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       }} />
       )}
 
+      {tab === "checkin-notes" && (
+        <CheckInNotesManager athleteId={athlete.id} token={token} />
+      )}
+
       {tab === "messages" && (
         <CoachMessaging athleteId={athlete.id} athleteName={athlete.name} token={token} />
       )}
@@ -2515,6 +2520,190 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Coach Video Manager — add/remove YouTube videos for an athlete
 ────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Check-In Notes Manager — editable notes that persist with the athlete
+────────────────────────────────────────────────────────────────────────────── */
+function CheckInNotesManager({ athleteId, token }) {
+  const [notes, setNotes] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ date: "", title: "Check-in", notes: "" });
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ title: "", notes: "" });
+  const [editSaving, setEditSaving] = useState(false);
+
+  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+
+  const loadNotes = async () => {
+    try {
+      const rows = await apiFetch(`/checkins/${athleteId}`, token);
+      setNotes(Array.isArray(rows) ? rows : []);
+    } catch { setNotes([]); }
+  };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => { setLoading(true); await loadNotes(); setLoading(false); })();
+  }, [athleteId, token]);
+
+  const addNote = async () => {
+    if (!form.date || !form.notes.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/checkins/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({ date: form.date, title: form.title.trim() || "Check-in", notes: form.notes.trim() }),
+      });
+      setForm({ date: "", title: "Check-in", notes: "" });
+      await loadNotes();
+    } catch (e) { alert(e.message); }
+    setSaving(false);
+  };
+
+  const startEdit = (note) => {
+    setEditingId(note.id);
+    setEditForm({ title: note.title || "", notes: note.notes || "" });
+  };
+
+  const saveEdit = async () => {
+    if (!editingId) return;
+    setEditSaving(true);
+    try {
+      await apiFetch(`/checkins/${athleteId}/${editingId}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ title: editForm.title.trim() || "Check-in", notes: editForm.notes }),
+      });
+      setEditingId(null);
+      await loadNotes();
+    } catch (e) { alert(e.message); }
+    setEditSaving(false);
+  };
+
+  const deleteNote = async (id) => {
+    if (!confirm("Delete this check-in note?")) return;
+    try {
+      await apiFetch(`/checkins/${athleteId}/${id}`, token, { method: "DELETE" });
+      await loadNotes();
+    } catch (e) { alert(e.message); }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Add new check-in note */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>NEW CHECK-IN NOTE</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 10, alignItems: "end" }}>
+          <div>
+            <label style={labelStyle}>Date</label>
+            <input type="date" value={form.date} onChange={e => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Title</label>
+            <input value={form.title} onChange={e => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Weekly check-in, Progress review" style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 10 }}>
+          <label style={labelStyle}>Notes</label>
+          <textarea
+            value={form.notes}
+            onChange={e => setForm(p => ({...p, notes: e.target.value}))}
+            placeholder="Enter check-in notes... (weight progress, adherence observations, plan adjustments, goals for next week, etc.)"
+            rows={5}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "DM Sans", lineHeight: 1.5 }}
+          />
+        </div>
+        <button onClick={addNote} disabled={saving || !form.date || !form.notes.trim()} style={{
+          background: form.date && form.notes.trim() ? T.accent : T.border,
+          color: form.date && form.notes.trim() ? T.bg : T.muted,
+          border: "none", borderRadius: 10, padding: "11px 20px",
+          fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+          cursor: form.date && form.notes.trim() && !saving ? "pointer" : "default",
+        }} type="button">{saving ? "Saving…" : "SAVE CHECK-IN NOTE"}</button>
+      </div>
+
+      {/* Notes list */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>
+          CHECK-IN HISTORY ({notes.length})
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14 }}>
+          Notes are tied to the athlete and will be visible to any coach assigned to them.
+        </div>
+
+        {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : notes.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 30, color: T.muted }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 12 }}>No check-in notes yet</div>
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {notes.map(note => {
+              const isEditing = editingId === note.id;
+              return (
+                <div key={note.id} style={{
+                  background: T.surface, border: `1px solid ${T.border}`,
+                  borderRadius: 12, padding: 16, transition: "all 0.15s",
+                }}>
+                  {/* Header */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <div style={{
+                        background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`,
+                        borderRadius: 8, padding: "4px 10px",
+                        fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11, color: T.coachGreen, fontWeight: 600,
+                      }}>
+                        {note.date ? new Date(note.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "—"}
+                      </div>
+                      {!isEditing && <span style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, color: T.text }}>{note.title}</span>}
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {!isEditing && (
+                        <>
+                          <button onClick={() => startEdit(note)} style={{ background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 10px", color: T.accent, fontFamily: "DM Sans", fontSize: 10, cursor: "pointer" }} type="button">✏️ Edit</button>
+                          <button onClick={() => deleteNote(note.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Content or edit form */}
+                  {isEditing ? (
+                    <div>
+                      <div style={{ marginBottom: 8 }}>
+                        <label style={labelStyle}>Title</label>
+                        <input value={editForm.title} onChange={e => setEditForm(p => ({...p, title: e.target.value}))} style={inputStyle} />
+                      </div>
+                      <div style={{ marginBottom: 10 }}>
+                        <label style={labelStyle}>Notes</label>
+                        <textarea value={editForm.notes} onChange={e => setEditForm(p => ({...p, notes: e.target.value}))} rows={5} style={{ ...inputStyle, resize: "vertical", fontFamily: "DM Sans", lineHeight: 1.5 }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={saveEdit} disabled={editSaving} style={{ background: T.coachGreen, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1, cursor: "pointer" }} type="button">{editSaving ? "Saving…" : "SAVE CHANGES"}</button>
+                        <button onClick={() => setEditingId(null)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 16px", fontFamily: "DM Sans", fontSize: 11, color: T.muted, cursor: "pointer" }} type="button">Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                      {note.notes}
+                    </div>
+                  )}
+
+                  {/* Meta */}
+                  <div style={{ display: "flex", gap: 12, marginTop: 10, fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>
+                    {note.createdByName && <span>Created by {note.createdByName}</span>}
+                    {note.created_at && <span>{new Date(note.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
+                    {note.updatedByName && <span style={{ color: T.accent }}>· Edited by {note.updatedByName} {note.updated_at ? new Date(note.updated_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CoachVideoManager({ athleteId, token }) {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);

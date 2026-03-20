@@ -2984,6 +2984,328 @@ function AdminPanel({ token, myId }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Batch Import Modal — CSV upload to create multiple athletes with welcome emails
+────────────────────────────────────────────────────────────────────────────── */
+function BatchImportModal({ token, onClose, onComplete }) {
+  const [step, setStep] = useState("upload"); // upload | preview | importing | results
+  const [csvRows, setCsvRows] = useState([]);
+  const [parseError, setParseError] = useState("");
+  const [sendEmails, setSendEmails] = useState(true);
+  const [progress, setProgress] = useState(0);
+  const [results, setResults] = useState(null);
+
+  // Parse CSV text
+  const parseCSV = (text) => {
+    const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) { setParseError("CSV needs a header row + at least one data row"); return; }
+
+    const header = lines[0].toLowerCase().split(",").map(h => h.trim().replace(/"/g, ""));
+    const nameIdx = header.findIndex(h => h === "name" || h === "full name" || h === "athlete");
+    const emailIdx = header.findIndex(h => h === "email" || h === "e-mail" || h === "email address");
+    const sportIdx = header.findIndex(h => h === "sport" || h === "discipline");
+
+    if (nameIdx === -1 || emailIdx === -1) {
+      setParseError('CSV must have "name" and "email" columns. Optional: "sport". Found: ' + header.join(", "));
+      return;
+    }
+
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      // Simple CSV parsing (handles quoted commas)
+      const parts = [];
+      let current = "", inQuote = false;
+      for (const ch of lines[i]) {
+        if (ch === '"') { inQuote = !inQuote; continue; }
+        if (ch === "," && !inQuote) { parts.push(current.trim()); current = ""; continue; }
+        current += ch;
+      }
+      parts.push(current.trim());
+
+      const name = parts[nameIdx] || "";
+      const email = parts[emailIdx] || "";
+      const sport = sportIdx >= 0 ? (parts[sportIdx] || "") : "";
+
+      if (name && email) {
+        rows.push({ name, email, sport, valid: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) });
+      }
+    }
+
+    if (rows.length === 0) { setParseError("No valid rows found in CSV"); return; }
+    setParseError("");
+    setCsvRows(rows);
+    setStep("preview");
+  };
+
+  const handleFile = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => parseCSV(e.target.result);
+    reader.readAsText(file);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    const file = e.dataTransfer?.files?.[0];
+    if (file) handleFile(file);
+  };
+
+  const startImport = async () => {
+    const validRows = csvRows.filter(r => r.valid);
+    if (validRows.length === 0) return;
+    setStep("importing");
+    setProgress(0);
+
+    try {
+      const res = await apiFetch("/athletes/batch", token, {
+        method: "POST",
+        body: JSON.stringify({ athletes: validRows.map(r => ({ name: r.name, email: r.email, sport: r.sport })), sendEmails }),
+      });
+      setResults(res);
+      setStep("results");
+    } catch (e) {
+      setResults({ error: e.message });
+      setStep("results");
+    }
+  };
+
+  const validCount = csvRows.filter(r => r.valid).length;
+  const invalidCount = csvRows.filter(r => !r.valid).length;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000000dd", zIndex: 600, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={(e) => { if (e.target === e.currentTarget && step !== "importing") onClose(); }}>
+      <div style={{ background: T.card, border: `1px solid ${T.coachGreen}55`, borderRadius: 20, padding: 28, width: "100%", maxWidth: 600, maxHeight: "85vh", overflowY: "auto" }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>
+            {step === "upload" && "📥 BATCH IMPORT ATHLETES"}
+            {step === "preview" && "PREVIEW IMPORT"}
+            {step === "importing" && "IMPORTING..."}
+            {step === "results" && "IMPORT COMPLETE"}
+          </div>
+          {step !== "importing" && (
+            <button onClick={onClose} style={{ background: "none", border: "none", color: T.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
+          )}
+        </div>
+
+        {/* STEP 1: Upload */}
+        {step === "upload" && (
+          <div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginBottom: 16, lineHeight: 1.5 }}>
+              Upload a CSV file with columns: <strong style={{ color: T.text }}>name</strong>, <strong style={{ color: T.text }}>email</strong>, and optionally <strong style={{ color: T.text }}>sport</strong>.
+              Each athlete will receive a welcome email with their temporary login credentials.
+            </div>
+
+            {/* Drop zone */}
+            <div
+              onDragOver={e => e.preventDefault()}
+              onDrop={handleDrop}
+              style={{
+                border: `2px dashed ${T.border}`, borderRadius: 14, padding: "40px 20px",
+                textAlign: "center", marginBottom: 16, cursor: "pointer", transition: "all 0.2s",
+              }}
+              onClick={() => document.getElementById("csv-file-input")?.click()}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = T.coachGreen; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; }}
+            >
+              <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
+              <div style={{ fontFamily: "DM Sans", fontSize: 13, color: T.text, fontWeight: 600 }}>
+                Drop CSV file here or click to browse
+              </div>
+              <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
+                Accepts .csv files up to 100 athletes
+              </div>
+              <input
+                id="csv-file-input"
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: "none" }}
+                onChange={e => handleFile(e.target.files?.[0])}
+              />
+            </div>
+
+            {parseError && (
+              <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "10px 14px", color: T.danger, fontFamily: "DM Sans", fontSize: 12, marginBottom: 14 }}>
+                {parseError}
+              </div>
+            )}
+
+            {/* Example format */}
+            <div style={{ background: T.surface, borderRadius: 10, padding: 14, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, lineHeight: 1.8 }}>
+              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Example CSV format:</div>
+              name,email,sport<br/>
+              John Smith,john@example.com,Rugby<br/>
+              Jane Doe,jane@example.com,Athletics<br/>
+              Mike Wilson,mike@example.com,Boxing
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: Preview */}
+        {step === "preview" && (
+          <div>
+            <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+              <div style={{ background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`, borderRadius: 8, padding: "8px 14px", flex: 1, textAlign: "center" }}>
+                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 24, color: T.coachGreen }}>{validCount}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>VALID</div>
+              </div>
+              {invalidCount > 0 && (
+                <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "8px 14px", flex: 1, textAlign: "center" }}>
+                  <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 24, color: T.danger }}>{invalidCount}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>INVALID EMAIL</div>
+                </div>
+              )}
+            </div>
+
+            {/* Preview table */}
+            <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 16, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "DM Sans", fontSize: 11 }}>
+                <thead>
+                  <tr style={{ background: T.surface }}>
+                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>NAME</th>
+                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>EMAIL</th>
+                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>SPORT</th>
+                    <th style={{ padding: "8px 12px", textAlign: "center", color: T.muted, fontSize: 10 }}>STATUS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {csvRows.map((r, i) => (
+                    <tr key={i} style={{ borderTop: `1px solid ${T.border}20` }}>
+                      <td style={{ padding: "8px 12px", color: T.text }}>{r.name}</td>
+                      <td style={{ padding: "8px 12px", color: T.text, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>{r.email}</td>
+                      <td style={{ padding: "8px 12px", color: T.muted }}>{r.sport || "—"}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                        {r.valid ? <span style={{ color: T.coachGreen }}>✓</span> : <span style={{ color: T.danger, fontSize: 10 }}>Invalid email</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Send emails toggle */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, padding: "10px 14px", background: T.surface, borderRadius: 10 }}>
+              <button
+                onClick={() => setSendEmails(!sendEmails)}
+                style={{
+                  width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+                  background: sendEmails ? T.coachGreen : T.border, position: "relative", transition: "background 0.2s",
+                }}
+              >
+                <div style={{
+                  width: 18, height: 18, borderRadius: "50%", background: "#fff",
+                  position: "absolute", top: 2, left: sendEmails ? 20 : 2, transition: "left 0.2s",
+                }} />
+              </button>
+              <div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: T.text }}>
+                  Send welcome emails
+                </div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>
+                  Each athlete receives their login credentials via email
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => { setStep("upload"); setCsvRows([]); }} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1, color: T.muted, cursor: "pointer", flex: 1 }}>BACK</button>
+              <button onClick={startImport} disabled={validCount === 0} style={{
+                background: validCount > 0 ? T.coachGreen : T.border, color: validCount > 0 ? "#fff" : T.muted,
+                border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5, cursor: validCount > 0 ? "pointer" : "default", flex: 2,
+              }}>IMPORT {validCount} ATHLETE{validCount !== 1 ? "S" : ""}</button>
+            </div>
+          </div>
+        )}
+
+        {/* STEP 3: Importing */}
+        {step === "importing" && (
+          <div style={{ textAlign: "center", padding: "30px 0" }}>
+            <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 16 }}>
+              {[0,1,2].map(i => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: T.coachGreen, animation: `pulse 1s infinite ${i * 0.25}s` }} />)}
+            </div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.text, fontWeight: 600 }}>
+              Creating accounts and sending emails...
+            </div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 6 }}>
+              This may take a moment for large batches
+            </div>
+          </div>
+        )}
+
+        {/* STEP 4: Results */}
+        {step === "results" && results && (
+          <div>
+            {results.error ? (
+              <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: 16, color: T.danger, fontFamily: "DM Sans", fontSize: 12, marginBottom: 16 }}>
+                Import failed: {results.error}
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+                  {[
+                    { label: "TOTAL", val: results.total, color: T.accent },
+                    { label: "CREATED", val: results.created, color: T.coachGreen },
+                    { label: "EMAILED", val: results.emailed, color: "#3b82f6" },
+                    { label: "FAILED", val: results.failed + results.exists, color: results.failed + results.exists > 0 ? T.danger : T.muted },
+                  ].map(s => (
+                    <div key={s.label} style={{ background: `${s.color}15`, border: `1px solid ${s.color}33`, borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
+                      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, color: s.color }}>{s.val}</div>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Detailed results */}
+                {results.results && (
+                  <div style={{ maxHeight: 250, overflowY: "auto", marginBottom: 16, border: `1px solid ${T.border}`, borderRadius: 10 }}>
+                    {results.results.map((r, i) => (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${T.border}15` }}>
+                        <span style={{
+                          width: 20, height: 20, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
+                          background: r.status === "created" ? `${T.coachGreen}22` : r.status === "exists" ? `${T.accent}22` : `${T.danger}22`,
+                          color: r.status === "created" ? T.coachGreen : r.status === "exists" ? T.accent : T.danger,
+                        }}>{r.status === "created" ? "✓" : r.status === "exists" ? "!" : "✕"}</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.text, fontWeight: 500 }}>{r.name}</div>
+                          <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{r.email}</div>
+                        </div>
+                        <div style={{ fontFamily: "DM Sans", fontSize: 10, color: r.status === "created" ? T.coachGreen : r.status === "exists" ? T.accent : T.danger }}>
+                          {r.status === "created" ? (r.emailSent ? "Created + emailed" : "Created (no email)") : r.status === "exists" ? "Already exists" : r.error}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Temp passwords (only shown if emails failed) */}
+                {results.results?.some(r => r.status === "created" && !r.emailSent) && (
+                  <div style={{ background: `${T.accent}12`, border: `1px solid ${T.accent}33`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
+                    <div style={{ fontFamily: "DM Sans", fontSize: 11, fontWeight: 600, color: T.accent, marginBottom: 8 }}>
+                      ⚠ Some emails failed — temporary passwords shown below (save these!)
+                    </div>
+                    {results.results.filter(r => r.status === "created" && !r.emailSent).map((r, i) => (
+                      <div key={i} style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.text, marginBottom: 3 }}>
+                        {r.email}: <strong style={{ color: T.accent }}>{r.tempPassword}</strong>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            <button onClick={onComplete} style={{
+              width: "100%", background: T.accent, color: T.bg, border: "none", borderRadius: 10,
+              padding: "12px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: "pointer",
+            }}>DONE</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function CoachCMS() {
   const [me, setMe] = useState(null); // { id, email, name, role, token }
   const [token, setToken] = useState(null);
@@ -2996,6 +3318,7 @@ export default function CoachCMS() {
   const [showAdd, setShowAdd] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showBatchImport, setShowBatchImport] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -3267,6 +3590,23 @@ export default function CoachCMS() {
               >
                 + ADD ATHLETE
               </button>
+              <button
+                onClick={() => setShowBatchImport(true)}
+                style={{
+                  background: T.coachGreen,
+                  color: "#fff",
+                  border: "none",
+                  borderRadius: 10,
+                  padding: "10px 18px",
+                  fontFamily: "Bebas Neue, system-ui",
+                  fontSize: 14,
+                  letterSpacing: 1.5,
+                  cursor: "pointer",
+                }}
+                type="button"
+              >
+                📥 BATCH IMPORT
+              </button>
               </div>
             </div>
 
@@ -3387,6 +3727,27 @@ export default function CoachCMS() {
           token={token}
           athleteCount={athletes.length}
           onClose={() => setShowBroadcast(false)}
+        />
+      )}
+
+      {showBatchImport && (
+        <BatchImportModal
+          token={token}
+          onClose={() => setShowBatchImport(false)}
+          onComplete={async () => {
+            setShowBatchImport(false);
+            // Refresh athlete list
+            try {
+              const rows = await apiFetch("/athletes", token);
+              if (Array.isArray(rows)) {
+                setAthletes(rows.map(a => ({
+                  id: a.id, name: a.name, email: a.email, sport: a.sport || "—",
+                  avatar: initialsOf(a.name), avatarColor: randomAvatarColor(),
+                  macroGoals: a.macroGoals || { calories: 2500, protein: 180, carbs: 280, fat: 75 },
+                })));
+              }
+            } catch {}
+          }}
         />
       )}
     </div>

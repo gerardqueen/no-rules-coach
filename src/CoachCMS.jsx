@@ -644,7 +644,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
-      onSaved?.();
+      onSaved?.(plan);
     } catch (e) {
       setErr(e.message || "Could not save macro plan");
     } finally {

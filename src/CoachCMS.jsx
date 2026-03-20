@@ -616,6 +616,16 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
     }));
   };
 
+  const copyToAll = (sourceDay) => {
+    const src = plan[sourceDay];
+    if (!src) return;
+    setPlan(() => {
+      const next = {};
+      DAYS.forEach(d => { next[d] = { ...src }; });
+      return next;
+    });
+  };
+
   const save = async () => {
     if (!athleteId) return;
     setSaving(true);
@@ -669,19 +679,26 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
             <tr>
               <th style={thStyle()}>DAY</th>
               <th style={thStyle()}>CAL</th>
-              <th style={thStyle()}>P</th>
-              <th style={thStyle()}>C</th>
-              <th style={thStyle()}>F</th>
+              <th style={thStyle()}>P (g)</th>
+              <th style={thStyle()}>C (g)</th>
+              <th style={thStyle()}>F (g)</th>
+              <th style={thStyle()}></th>
             </tr>
           </thead>
           <tbody>
             {DAYS.map((d) => (
               <tr key={d}>
-                <td style={tdStyle()}>{d}</td>
+                <td style={tdStyle()}><strong>{d}</strong></td>
                 <td style={tdStyle()}><input value={plan[d]?.calories ?? 0} onChange={(e) => setCell(d, "calories", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.protein ?? 0} onChange={(e) => setCell(d, "protein", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.carbs ?? 0} onChange={(e) => setCell(d, "carbs", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.fat ?? 0} onChange={(e) => setCell(d, "fat", e.target.value)} style={cellInput()} /></td>
+                <td style={tdStyle()}>
+                  <button onClick={() => copyToAll(d)} title={`Copy ${d} to all days`} style={{
+                    background: "none", border: `1px solid ${T.border}`, borderRadius: 4, padding: "2px 6px",
+                    color: T.muted, fontSize: 9, cursor: "pointer", fontFamily: "DM Sans", whiteSpace: "nowrap",
+                  }} type="button">Copy→All</button>
+                </td>
               </tr>
             ))}
           </tbody>

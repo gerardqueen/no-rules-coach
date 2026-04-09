@@ -37,15 +37,6 @@ const T = {
 
 const DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
 
-const CAL_TYPES = [
-  { id: "checkin", label: "Check-In", color: "#22c55e", icon: "✅" },
-  { id: "nutrition", label: "Nutrition Plan", color: "#FF9A52", icon: "🥗" },
-  { id: "training", label: "Training", color: "#3b82f6", icon: "🏋️" },
-  { id: "competition", label: "Competition", color: "#ef4444", icon: "🏆" },
-  { id: "meal_prep", label: "Meal Prep", color: "#a855f7", icon: "🍱" },
-  { id: "reminder", label: "Reminder", color: "#f59e0b", icon: "🔔" },
-];
-
 /**
  * Logo: embedded SVG so it never depends on a removed file.
  * (If you want your original logo image, you can swap this string with your own base64.)
@@ -616,16 +607,6 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
     }));
   };
 
-  const copyToAll = (sourceDay) => {
-    const src = plan[sourceDay];
-    if (!src) return;
-    setPlan(() => {
-      const next = {};
-      DAYS.forEach(d => { next[d] = { ...src }; });
-      return next;
-    });
-  };
-
   const save = async () => {
     if (!athleteId) return;
     setSaving(true);
@@ -644,7 +625,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 1500);
-      onSaved?.(plan);
+      onSaved?.();
     } catch (e) {
       setErr(e.message || "Could not save macro plan");
     } finally {
@@ -679,26 +660,19 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
             <tr>
               <th style={thStyle()}>DAY</th>
               <th style={thStyle()}>CAL</th>
-              <th style={thStyle()}>P (g)</th>
-              <th style={thStyle()}>C (g)</th>
-              <th style={thStyle()}>F (g)</th>
-              <th style={thStyle()}></th>
+              <th style={thStyle()}>P</th>
+              <th style={thStyle()}>C</th>
+              <th style={thStyle()}>F</th>
             </tr>
           </thead>
           <tbody>
             {DAYS.map((d) => (
               <tr key={d}>
-                <td style={tdStyle()}><strong>{d}</strong></td>
+                <td style={tdStyle()}>{d}</td>
                 <td style={tdStyle()}><input value={plan[d]?.calories ?? 0} onChange={(e) => setCell(d, "calories", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.protein ?? 0} onChange={(e) => setCell(d, "protein", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.carbs ?? 0} onChange={(e) => setCell(d, "carbs", e.target.value)} style={cellInput()} /></td>
                 <td style={tdStyle()}><input value={plan[d]?.fat ?? 0} onChange={(e) => setCell(d, "fat", e.target.value)} style={cellInput()} /></td>
-                <td style={tdStyle()}>
-                  <button onClick={() => copyToAll(d)} title={`Copy ${d} to all days`} style={{
-                    background: "none", border: `1px solid ${T.border}`, borderRadius: 4, padding: "2px 6px",
-                    color: T.muted, fontSize: 9, cursor: "pointer", fontFamily: "DM Sans", whiteSpace: "nowrap",
-                  }} type="button">Copy→All</button>
-                </td>
               </tr>
             ))}
           </tbody>
@@ -1088,33 +1062,90 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Athlete Calendar Manager — view + add events for athlete
 ────────────────────────────────────────────────────────────────────────────── */
+function CoachMealsViewer({ athleteId, token }) {
+  const [meals, setMeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState(null);
+
+  const load = async () => {
+    if (!athleteId || !token) return;
+    try {
+      const rows = await apiFetch(`/meals/${athleteId}`, token);
+      setMeals(Array.isArray(rows) ? rows : []);
+    } catch { setMeals([]); }
+    setLoading(false);
+  };
+
+  useEffect(() => { setLoading(true); load(); }, [athleteId, token]);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>SAVED MEALS</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 2 }}>
+          Meal templates the athlete has saved for quick-add. Useful for identifying patterns and recommending adjustments.
+        </div>
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : meals.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12, padding: "20px 0", textAlign: "center" }}>
+          No saved meals yet. The athlete can create these from the Weekly Planner in their app.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {meals.map((m) => {
+            const isExp = expanded === m.id;
+            const ingredients = m.ingredients || [];
+            return (
+              <div key={m.id} style={{
+                background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden",
+              }}>
+                <div onClick={() => setExpanded(isExp ? null : m.id)} style={{
+                  padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
+                }}>
+                  <span style={{ fontSize: 18 }}>🍽</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, color: T.text }}>{m.name}</div>
+                    <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
+                      {ingredients.length} item{ingredients.length !== 1 ? "s" : ""} · {m.total_calories} cal · P {m.total_protein_g}g · C {m.total_carbs_g}g · F {m.total_fat_g}g
+                    </div>
+                  </div>
+                  <span style={{ color: T.muted, fontSize: 14 }}>{isExp ? "▾" : "▸"}</span>
+                </div>
+                {isExp && (
+                  <div style={{ padding: "4px 14px 14px", borderTop: `1px solid ${T.border}` }}>
+                    {ingredients.length === 0 ? <div style={{ fontSize: 11, color: T.muted, padding: "8px 0" }}>No ingredients</div> :
+                     ingredients.map((ing, i) => (
+                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < ingredients.length - 1 ? `1px solid ${T.border}30` : "none" }}>
+                        <span style={{ fontSize: 11, color: T.text, fontFamily: "DM Sans" }}>
+                          {ing.name} <span style={{ color: T.muted, fontSize: 9 }}>({ing.grams}g)</span>
+                        </span>
+                        <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
+                          {Math.round(ing.calories)} · {Math.round(ing.protein_g || 0)}p · {Math.round(ing.carbs_g || 0)}c · {Math.round(ing.fat_g || 0)}f
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AthleteCalendarManager({ athleteId, token }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", title: "", notes: "", type: "checkin" });
+  const [form, setForm] = useState({ date: "", title: "", notes: "" });
   const [saving, setSaving] = useState(false);
-
-  // Parse [type:xxx] prefix from notes to reconstruct event type
-  const parseEventType = (ev) => {
-    const notes = ev.notes || "";
-    const typeMatch = notes.match(/^\[type:(\w+)\]/);
-    return {
-      ...ev,
-      type: typeMatch ? typeMatch[1] : (
-        (ev.title || "").toLowerCase().includes("check") ? "checkin" :
-        (ev.title || "").toLowerCase().includes("train") ? "training" :
-        (ev.title || "").toLowerCase().includes("comp") ? "competition" :
-        "reminder"
-      ),
-      notes: typeMatch ? notes.replace(/^\[type:\w+\]/, "") : notes,
-    };
-  };
-  const getType = (id) => CAL_TYPES.find(t => t.id === id) || CAL_TYPES[5];
 
   const loadEvents = async () => {
     try {
       const rows = await apiFetch(`/calendar-events/${athleteId}`, token);
-      setEvents(Array.isArray(rows) ? rows.map(parseEventType) : []);
+      setEvents(Array.isArray(rows) ? rows : []);
     } catch { setEvents([]); }
   };
 
@@ -1131,13 +1162,11 @@ function AthleteCalendarManager({ athleteId, token }) {
     if (!form.date || !form.title.trim()) return;
     setSaving(true);
     try {
-      // Encode type in notes prefix for persistence
-      const notesWithType = `[type:${form.type}]${form.notes || ''}`;
       await apiFetch(`/calendar-events/${athleteId}`, token, {
         method: "POST",
-        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: notesWithType }),
+        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: form.notes }),
       });
-      setForm({ date: "", title: "", notes: "", type: "checkin" });
+      setForm({ date: "", title: "", notes: "" });
       await loadEvents();
     } catch (e) { alert(e.message); }
     setSaving(false);
@@ -1155,22 +1184,10 @@ function AthleteCalendarManager({ athleteId, token }) {
       <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>CALENDAR EVENTS</div>
 
       {/* Add event form */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
         <div>
           <label style={labelStyle}>Date</label>
           <input type="date" value={form.date} onChange={(e) => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>Type</label>
-          <select
-            value={form.type}
-            onChange={(e) => setForm(p => ({...p, type: e.target.value}))}
-            style={{ ...inputStyle, cursor: "pointer" }}
-          >
-            {CAL_TYPES.map(t => (
-              <option key={t.id} value={t.id}>{t.icon} {t.label}</option>
-            ))}
-          </select>
         </div>
         <div>
           <label style={labelStyle}>Title</label>
@@ -1193,23 +1210,16 @@ function AthleteCalendarManager({ athleteId, token }) {
         <div style={{ color: T.muted, fontSize: 12 }}>No calendar events yet. Add one above.</div>
       ) : (
         <div style={{ maxHeight: 300, overflowY: "auto" }}>
-          {events.map((ev) => {
-            const evType = getType(ev.type);
-            return (
-              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
-                <span style={{ fontSize: 16, flexShrink: 0 }}>{evType.icon}</span>
-                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: evType.color, whiteSpace: "nowrap" }}>{ev.date}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2 }}>
-                    <span style={{ fontSize: 9, color: evType.color, background: evType.color + "22", padding: "1px 6px", borderRadius: 4, fontWeight: 600 }}>{evType.label.toUpperCase()}</span>
-                    {ev.notes && <span style={{ fontSize: 11, color: T.muted }}>{ev.notes}</span>}
-                  </div>
-                </div>
-                <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
+          {events.map((ev) => (
+            <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
+              <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
+                {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
               </div>
-            );
-          })}
+              <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1823,18 +1833,15 @@ function AdminCoachOverview({ token, myId }) {
    Coach Inbox — unified view of all athlete conversations
 ────────────────────────────────────────────────────────────────────────────── */
 function CoachInbox({ athletes, token, onBroadcast }) {
-  const [activeAthleteId, setActiveAthleteId] = useState(null);
-  const [threadList, setThreadList] = useState([]);
-  const [activeThread, setActiveThread] = useState(null); // { threadId, subject }
+  const [activeId, setActiveId] = useState(null); // "athleteId-chat" or "athleteId-checkin"
   const [messages, setMessages] = useState([]);
-  const [unreadMap, setUnreadMap] = useState({});
+  const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingChat, setLoadingChat] = useState(false);
-  const [view, setView] = useState("athletes"); // "athletes" | "threads" | "thread" | "compose"
-  const [composeSubject, setComposeSubject] = useState("");
   const bottomRef = useRef(null);
 
+  // Load unread counts
   const loadUnread = async () => {
     try {
       const rows = await apiFetch("/messages-unread", token);
@@ -1844,225 +1851,157 @@ function CoachInbox({ athletes, token, onBroadcast }) {
     } catch {}
   };
   useEffect(() => { loadUnread(); }, [token]);
-  useEffect(() => { const i = setInterval(loadUnread, 15000); return () => clearInterval(i); }, [token]);
+  useEffect(() => {
+    const interval = setInterval(loadUnread, 15 * 1000);
+    return () => clearInterval(interval);
+  }, [token]);
 
-  // Load threads for selected athlete
-  const loadThreads = async (aid) => {
+  const msgFilter = activeId && String(activeId).endsWith("-checkin") ? "checkin" : "chat";
+  const athleteIdFromActive = activeId ? parseInt(String(activeId).replace(/-checkin$/, "").replace(/-chat$/, ""), 10) : null;
+
+  // Load chat for active athlete (filter by type from thread id)
+  const loadChat = async (aid) => {
     if (!aid) return;
-    try {
-      const rows = await apiFetch(`/messages/threads/${aid}`, token);
-      if (Array.isArray(rows)) setThreadList(rows);
-    } catch { setThreadList([]); }
-  };
-
-  const selectAthlete = (aid) => {
-    setActiveAthleteId(aid);
-    setActiveThread(null);
-    setView("threads");
-    setInput("");
-    loadThreads(aid);
-  };
-
-  // Load messages for a specific thread
-  const openThread = async (thread) => {
-    setActiveThread(thread);
-    setView("thread");
-    setInput("");
     setLoadingChat(true);
     try {
-      const msgs = await apiFetch(`/messages/thread/${activeAthleteId}/${thread.threadId}`, token);
+      const url = msgFilter === "checkin" ? `/messages/${aid}?type=checkin` : `/messages/${aid}?type=chat`;
+      const msgs = await apiFetch(url, token);
       if (Array.isArray(msgs)) setMessages(msgs);
-      setUnreadMap(prev => ({ ...prev, [activeAthleteId]: Math.max(0, (prev[activeAthleteId] || 0) - (thread.unreadCount || 0)) }));
+      // Clear unread for this athlete
+      setUnreadMap(prev => ({ ...prev, [aid]: 0 }));
     } catch { setMessages([]); }
     setLoadingChat(false);
   };
 
-  // Poll active thread
+  useEffect(() => { if (athleteIdFromActive) loadChat(athleteIdFromActive); }, [activeId, athleteIdFromActive, msgFilter]);
+  // Poll active chat
   useEffect(() => {
-    if (view !== "thread" || !activeThread || !activeAthleteId) return;
-    const i = setInterval(async () => {
-      try {
-        const msgs = await apiFetch(`/messages/thread/${activeAthleteId}/${activeThread.threadId}`, token);
-        if (Array.isArray(msgs)) setMessages(msgs);
-      } catch {}
-    }, 10000);
-    return () => clearInterval(i);
-  }, [view, activeThread?.threadId, activeAthleteId]);
+    if (!athleteIdFromActive) return;
+    const interval = setInterval(() => loadChat(athleteIdFromActive), 12 * 1000);
+    return () => clearInterval(interval);
+  }, [activeId, athleteIdFromActive]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const send = async () => {
-    if (!input.trim() || !activeAthleteId || sending) return;
+    if (!input.trim() || !athleteIdFromActive || sending) return;
     setSending(true);
     try {
-      const body = { content: input.trim() };
-      if (view === "compose") {
-        if (!composeSubject.trim()) { setSending(false); return; }
-        body.subject = composeSubject.trim();
-      } else if (activeThread) {
-        body.threadId = activeThread.threadId;
-        body.subject = activeThread.subject;
-      }
-      const msg = await apiFetch(`/messages/${activeAthleteId}`, token, {
-        method: "POST", body: JSON.stringify(body),
+      const msg = await apiFetch(`/messages/${athleteIdFromActive}`, token, {
+        method: "POST", body: JSON.stringify({
+          content: input.trim(),
+          messageType: msgFilter === "checkin" ? "checkin" : "chat",
+        }),
       });
-      if (view === "compose") {
-        // Switch to thread view
-        await loadThreads(activeAthleteId);
-        setActiveThread({ threadId: msg.threadId, subject: msg.subject || composeSubject.trim() });
-        setMessages([msg]);
-        setView("thread");
-        setComposeSubject("");
-      } else {
-        setMessages(prev => [...prev, msg]);
-      }
+      setMessages(prev => [...prev, msg]);
       setInput("");
     } catch (e) { alert(e.message); }
     setSending(false);
   };
 
   const totalUnread = Object.values(unreadMap).reduce((s, c) => s + c, 0);
-  const activeAthlete = athletes.find(a => a.id === activeAthleteId);
+  const activeAthlete = athletes.find(a => a.id === athleteIdFromActive);
+
+  // Two threads per athlete: Chat and Check-ins (separate conversations)
   const sorted = [...athletes].sort((a, b) => {
     const ua = unreadMap[a.id] || 0, ub = unreadMap[b.id] || 0;
     if (ua > 0 && ub === 0) return -1;
     if (ub > 0 && ua === 0) return 1;
     return a.name.localeCompare(b.name);
   });
+  const threadList = [];
+  sorted.forEach((a) => {
+    threadList.push({ id: `${a.id}-chat`, athleteId: a.id, name: a.name, sub: "Chat", avatar: a.avatar, avatarColor: a.avatarColor, unread: unreadMap[a.id] || 0 });
+    threadList.push({ id: `${a.id}-checkin`, athleteId: a.id, name: a.name, sub: "Check-in notes", avatar: a.avatar, avatarColor: a.avatarColor, unread: 0 });
+  });
 
   return (
     <div style={{ display: "flex", height: "calc(100vh - 140px)", borderRadius: 20, overflow: "hidden", border: `1px solid ${T.border}`, background: T.bg }}>
-      {/* Athlete list */}
-      <div style={{ width: 260, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
+      {/* ── LEFT: Thread list ── */}
+      <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", background: T.card }}>
         <div style={{ padding: "16px 18px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MESSAGES</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{athletes.length} athlete{athletes.length !== 1 ? "s" : ""}</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{threadList.length} conversations</div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {totalUnread > 0 && <div style={{ background: T.danger, borderRadius: 10, padding: "2px 8px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: "#fff", fontWeight: 700 }}>{totalUnread}</div>}
-            <button onClick={onBroadcast} style={{ background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 8px", color: T.accent, fontFamily: "DM Sans", fontSize: 9, cursor: "pointer" }} type="button">📢 All</button>
+            {totalUnread > 0 && (
+              <div style={{ background: T.danger, borderRadius: 10, padding: "2px 8px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: "#fff", fontWeight: 700 }}>{totalUnread}</div>
+            )}
+            <button onClick={onBroadcast} style={{
+              background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 8px",
+              color: T.accent, fontFamily: "DM Sans", fontSize: 9, cursor: "pointer",
+            }} type="button">📢 All</button>
           </div>
         </div>
+
         <div style={{ overflowY: "auto", flex: 1 }}>
-          {sorted.map((a, idx) => {
-            const unread = unreadMap[a.id] || 0;
-            const isActive = activeAthleteId === a.id;
+          {threadList.map((t, idx) => {
+            const isActive = activeId === t.id;
             return (
-              <div key={a.id} onClick={() => selectAthlete(a.id)} style={{
-                padding: "12px 18px", borderBottom: idx < sorted.length - 1 ? `1px solid ${T.border}` : "none",
-                background: isActive ? T.surface : unread > 0 ? `${T.coachGreen}08` : "transparent",
-                cursor: "pointer", display: "flex", gap: 10, alignItems: "center",
-              }}>
-                <Avatar initials={a.avatar || initialsOf(a.name)} color={a.avatarColor || T.accent} size={36} />
+              <div key={t.id} onClick={() => { setActiveId(t.id); setInput(""); }} style={{
+                padding: "12px 18px", borderBottom: idx < threadList.length - 1 ? `1px solid ${T.border}` : "none",
+                background: isActive ? T.surface : t.unread > 0 ? `${T.coachGreen}08` : "transparent",
+                cursor: "pointer", display: "flex", gap: 10, alignItems: "center", transition: "background .15s",
+              }}
+                onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = T.surface; }}
+                onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = t.unread > 0 ? `${T.coachGreen}08` : "transparent"; }}
+              >
+                {t.unread > 0 && <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, background: T.coachGreen, borderRadius: "4px 0 0 4px" }} />}
+                <Avatar initials={t.avatar || initialsOf(t.name)} color={t.avatarColor || T.accent} size={36} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: unread > 0 ? 700 : 500, color: T.text }}>{a.name}</div>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{a.sport || "Athlete"}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: t.unread > 0 ? 700 : 500, color: T.text }}>{t.name}</div>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{t.sub}</div>
                 </div>
-                {unread > 0 && <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{unread}</span></div>}
+                {t.unread > 0 && (
+                  <div style={{ background: T.coachGreen, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: "#fff", fontWeight: 700 }}>{t.unread}</span>
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       </div>
-      {/* Main panel */}
+
+      {/* ── RIGHT: Active chat ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        {/* No athlete selected */}
-        {view === "athletes" && (
+        {!activeId ? (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 12 }}>
-            <div style={{ fontSize: 40, opacity: 0.3 }}>✉</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to view threads</div>
+            <div style={{ fontSize: 40, opacity: 0.3 }}>💬</div>
+            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.muted }}>Select an athlete to start messaging</div>
           </div>
-        )}
-
-        {/* Thread list for selected athlete */}
-        {view === "threads" && activeAthlete && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
-                <div><div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div><div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{threadList.length} thread{threadList.length !== 1 ? "s" : ""}</div></div>
-              </div>
-              <button onClick={() => { setView("compose"); setComposeSubject(""); setInput(""); }} style={{
-                background: T.accent, color: T.bg, border: "none", borderRadius: 8,
-                padding: "6px 12px", fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1, cursor: "pointer",
-              }}>✉ NEW THREAD</button>
-            </div>
-            <div style={{ flex: 1, overflowY: "auto" }}>
-              {threadList.length === 0 ? (
-                <div style={{ textAlign: "center", padding: 40, color: T.muted, fontFamily: "DM Sans", fontSize: 12 }}>No threads yet. Start a new conversation.</div>
-              ) : threadList.map((t, idx) => {
-                const hasUnread = (t.unreadCount || 0) > 0;
-                return (
-                  <div key={t.threadId} onClick={() => openThread(t)} style={{
-                    padding: "14px 20px", borderBottom: `1px solid ${T.border}15`,
-                    background: hasUnread ? `${T.accent}06` : "transparent", cursor: "pointer",
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                      <span style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: hasUnread ? 700 : 500, color: T.text }}>{t.subject || "General"}</span>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        {hasUnread && <div style={{ background: T.accent, borderRadius: "50%", width: 18, height: 18, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.bg, fontWeight: 700 }}>{t.unreadCount}</span></div>}
-                        {t.lastAt && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted }}>{new Date(t.lastAt).toLocaleDateString('en-GB', { day: "numeric", month: "short" })}</span>}
-                      </div>
-                    </div>
-                    <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.lastMessage}</div>
-                    <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.border, marginTop: 3 }}>{t.messageCount} message{t.messageCount !== 1 ? "s" : ""}</div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Compose new thread */}
-        {view === "compose" && activeAthlete && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={() => setView("threads")} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, padding: 0 }}>←</button>
-              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>NEW MESSAGE TO {activeAthlete.name.toUpperCase()}</div>
-            </div>
-            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${T.border}` }}>
-              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Subject</div>
-              <input value={composeSubject} onChange={e => setComposeSubject(e.target.value)} placeholder="e.g. Weekly check-in, Macro adjustment, Training update…"
-                style={{ width: "100%", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 13, outline: "none" }} />
-            </div>
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <div style={{ textAlign: "center", color: T.muted }}><div style={{ fontSize: 32, marginBottom: 8 }}>✉</div><div style={{ fontFamily: "DM Sans", fontSize: 12 }}>Write your message below</div></div>
-            </div>
-            <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === "Enter" && send()} placeholder="Write your message…"
-                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }} />
-              <button onClick={send} disabled={sending || !input.trim() || !composeSubject.trim()} style={{
-                background: input.trim() && composeSubject.trim() ? T.accent : T.border, color: input.trim() && composeSubject.trim() ? T.bg : T.muted,
-                border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() && composeSubject.trim() ? "pointer" : "default",
-              }} type="button">{sending ? "…" : "SEND"}</button>
-            </div>
-          </div>
-        )}
-
-        {/* Thread messages */}
-        {view === "thread" && activeThread && (
+        ) : (
           <>
-            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={() => { setView("threads"); loadThreads(activeAthleteId); }} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, padding: 0 }}>←</button>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <Avatar initials={activeAthlete?.avatar || "?"} color={activeAthlete?.avatarColor || T.accent} size={36} />
               <div style={{ flex: 1 }}>
-                <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeThread.subject || "General"}</div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>with {activeAthlete?.name} · {messages.length} message{messages.length !== 1 ? "s" : ""}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 14, fontWeight: 700, color: T.text }}>{activeAthlete?.name}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{activeAthlete?.sport || "Athlete"} · Live</div>
+              </div>
+              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>{msgFilter === "checkin" ? "Check-in notes" : "Chat"}</div>
+              <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: "auto" }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
+                <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
               </div>
             </div>
+
             <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
               {loadingChat ? <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>Loading…</div> :
-               messages.length === 0 ? <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>No messages yet</div> :
-               messages.map((m, i) => {
-                const isCoach = m.fromId !== activeAthleteId;
-                const showDate = i === 0 || new Date(m.created_at).toDateString() !== new Date(messages[i-1]?.created_at).toDateString();
+               messages.length === 0 ? (
+                <div style={{ textAlign: "center", color: T.muted, fontFamily: "DM Sans", fontSize: 12, padding: 30 }}>
+                  No messages yet. Start the conversation with {activeAthlete?.name}!
+                </div>
+              ) : messages.map((m) => {
+                const isCoach = m.fromId !== athleteIdFromActive;
+                const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
                 return (
-                  <div key={m.id || i}>
-                    {showDate && <div style={{ textAlign: "center", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted, margin: "12px 0", padding: "4px 12px", background: T.surface, borderRadius: 20, display: "inline-block", position: "relative", left: "50%", transform: "translateX(-50%)" }}>{new Date(m.created_at).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>}
-                    <div style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                      <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
-                        {!isCoach && m.fromName && <div style={{ fontFamily: "DM Sans", fontSize: 10, fontWeight: 700, color: T.coachGreen, marginBottom: 4 }}>{m.fromName}</div>}
-                        <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{m.content}</div>
-                        <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? T.bg + "88" : T.muted, marginTop: 4, textAlign: "right" }}>{m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                  <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                    <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 10, color: isCoach ? `${T.bg}aa` : T.muted, marginBottom: 2 }}>{senderName}</div>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
+                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
+                        {m.created_at ? new Date(m.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+                        {m.messageType === "broadcast" && " · 📢 Announcement"}
                       </div>
                     </div>
                   </div>
@@ -2070,10 +2009,19 @@ function CoachInbox({ athletes, token, onBroadcast }) {
               })}
               <div ref={bottomRef} />
             </div>
+
             <div style={{ padding: "12px 20px", borderTop: `1px solid ${T.border}`, display: "flex", gap: 8 }}>
-              <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} placeholder="Reply…"
-                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }} />
-              <button onClick={send} disabled={sending || !input.trim()} style={{ background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted, border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: input.trim() ? "pointer" : "default" }} type="button">{sending ? "…" : "REPLY"}</button>
+              <input value={input} onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && send()}
+                placeholder={`Message ${activeAthlete?.name}…`}
+                style={{ flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+              />
+              <button onClick={send} disabled={sending || !input.trim()} style={{
+                background: input.trim() ? T.accent : T.border, color: input.trim() ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: "10px 16px",
+                fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
+                cursor: input.trim() ? "pointer" : "default",
+              }} type="button">{sending ? "…" : "SEND"}</button>
             </div>
           </>
         )}
@@ -2149,12 +2097,11 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
-    { id: "checkin-notes", label: "CHECK-IN NOTES" },
     { id: "messages", label: "MESSAGES" },
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
+    { id: "meals", label: "SAVED MEALS" },
     { id: "calendar", label: "CALENDAR" },
-    { id: "videos", label: "VIDEOS" },
   ];
 
   return (
@@ -2505,10 +2452,6 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       }} />
       )}
 
-      {tab === "checkin-notes" && (
-        <CheckInNotesManager athleteId={athlete.id} token={token} />
-      )}
-
       {tab === "messages" && (
         <CoachMessaging athleteId={athlete.id} athleteName={athlete.name} token={token} />
       )}
@@ -2524,334 +2467,12 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
         <AthleteFoodLogViewer athleteId={athlete.id} token={token} macroTarget={goals} />
       )}
 
+      {tab === "meals" && (
+        <CoachMealsViewer athleteId={athlete.id} token={token} />
+      )}
+
       {tab === "calendar" && (
         <AthleteCalendarManager athleteId={athlete.id} token={token} />
-      )}
-      {tab === "videos" && (
-        <CoachVideoManager athleteId={athlete.id} token={token} />
-      )}
-    </div>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   Coach Video Manager — add/remove YouTube videos for an athlete
-────────────────────────────────────────────────────────────────────────────── */
-/* ─────────────────────────────────────────────────────────────────────────────
-   Check-In Notes Manager — editable notes that persist with the athlete
-────────────────────────────────────────────────────────────────────────────── */
-function CheckInNotesManager({ athleteId, token }) {
-  const [notes, setNotes] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", title: "Check-in", notes: "" });
-  const [saving, setSaving] = useState(false);
-  const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ title: "", notes: "" });
-  const [editSaving, setEditSaving] = useState(false);
-
-  const todayStr = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
-
-  const loadNotes = async () => {
-    try {
-      const rows = await apiFetch(`/checkins/${athleteId}`, token);
-      setNotes(Array.isArray(rows) ? rows : []);
-    } catch { setNotes([]); }
-  };
-
-  useEffect(() => {
-    if (!athleteId || !token) return;
-    (async () => { setLoading(true); await loadNotes(); setLoading(false); })();
-  }, [athleteId, token]);
-
-  const addNote = async () => {
-    if (!form.date || !form.notes.trim()) return;
-    setSaving(true);
-    try {
-      await apiFetch(`/checkins/${athleteId}`, token, {
-        method: "POST",
-        body: JSON.stringify({ date: form.date, title: form.title.trim() || "Check-in", notes: form.notes.trim() }),
-      });
-      setForm({ date: "", title: "Check-in", notes: "" });
-      await loadNotes();
-    } catch (e) { alert(e.message); }
-    setSaving(false);
-  };
-
-  const startEdit = (note) => {
-    setEditingId(note.id);
-    setEditForm({ title: note.title || "", notes: note.notes || "" });
-  };
-
-  const saveEdit = async () => {
-    if (!editingId) return;
-    setEditSaving(true);
-    try {
-      await apiFetch(`/checkins/${athleteId}/${editingId}`, token, {
-        method: "PUT",
-        body: JSON.stringify({ title: editForm.title.trim() || "Check-in", notes: editForm.notes }),
-      });
-      setEditingId(null);
-      await loadNotes();
-    } catch (e) { alert(e.message); }
-    setEditSaving(false);
-  };
-
-  const deleteNote = async (id) => {
-    if (!confirm("Delete this check-in note?")) return;
-    try {
-      await apiFetch(`/checkins/${athleteId}/${id}`, token, { method: "DELETE" });
-      await loadNotes();
-    } catch (e) { alert(e.message); }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Add new check-in note */}
-      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>NEW CHECK-IN NOTE</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 10, alignItems: "end" }}>
-          <div>
-            <label style={labelStyle}>Date</label>
-            <input type="date" value={form.date} onChange={e => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Title</label>
-            <input value={form.title} onChange={e => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Weekly check-in, Progress review" style={inputStyle} />
-          </div>
-        </div>
-        <div style={{ marginBottom: 10 }}>
-          <label style={labelStyle}>Notes</label>
-          <textarea
-            value={form.notes}
-            onChange={e => setForm(p => ({...p, notes: e.target.value}))}
-            placeholder="Enter check-in notes... (weight progress, adherence observations, plan adjustments, goals for next week, etc.)"
-            rows={5}
-            style={{ ...inputStyle, resize: "vertical", fontFamily: "DM Sans", lineHeight: 1.5 }}
-          />
-        </div>
-        <button onClick={addNote} disabled={saving || !form.date || !form.notes.trim()} style={{
-          background: form.date && form.notes.trim() ? T.accent : T.border,
-          color: form.date && form.notes.trim() ? T.bg : T.muted,
-          border: "none", borderRadius: 10, padding: "11px 20px",
-          fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
-          cursor: form.date && form.notes.trim() && !saving ? "pointer" : "default",
-        }} type="button">{saving ? "Saving…" : "SAVE CHECK-IN NOTE"}</button>
-      </div>
-
-      {/* Notes list */}
-      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>
-          CHECK-IN HISTORY ({notes.length})
-        </div>
-        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14 }}>
-          Notes are tied to the athlete and will be visible to any coach assigned to them.
-        </div>
-
-        {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : notes.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 30, color: T.muted }}>
-            <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 12 }}>No check-in notes yet</div>
-          </div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {notes.map(note => {
-              const isEditing = editingId === note.id;
-              return (
-                <div key={note.id} style={{
-                  background: T.surface, border: `1px solid ${T.border}`,
-                  borderRadius: 12, padding: 16, transition: "all 0.15s",
-                }}>
-                  {/* Header */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <div style={{
-                        background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`,
-                        borderRadius: 8, padding: "4px 10px",
-                        fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11, color: T.coachGreen, fontWeight: 600,
-                      }}>
-                        {note.date ? new Date(note.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "—"}
-                      </div>
-                      {!isEditing && <span style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, color: T.text }}>{note.title}</span>}
-                    </div>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      {!isEditing && (
-                        <>
-                          <button onClick={() => startEdit(note)} style={{ background: "none", border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "4px 10px", color: T.accent, fontFamily: "DM Sans", fontSize: 10, cursor: "pointer" }} type="button">✏️ Edit</button>
-                          <button onClick={() => deleteNote(note.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Content or edit form */}
-                  {isEditing ? (
-                    <div>
-                      <div style={{ marginBottom: 8 }}>
-                        <label style={labelStyle}>Title</label>
-                        <input value={editForm.title} onChange={e => setEditForm(p => ({...p, title: e.target.value}))} style={inputStyle} />
-                      </div>
-                      <div style={{ marginBottom: 10 }}>
-                        <label style={labelStyle}>Notes</label>
-                        <textarea value={editForm.notes} onChange={e => setEditForm(p => ({...p, notes: e.target.value}))} rows={5} style={{ ...inputStyle, resize: "vertical", fontFamily: "DM Sans", lineHeight: 1.5 }} />
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button onClick={saveEdit} disabled={editSaving} style={{ background: T.coachGreen, color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1, cursor: "pointer" }} type="button">{editSaving ? "Saving…" : "SAVE CHANGES"}</button>
-                        <button onClick={() => setEditingId(null)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 16px", fontFamily: "DM Sans", fontSize: 11, color: T.muted, cursor: "pointer" }} type="button">Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                      {note.notes}
-                    </div>
-                  )}
-
-                  {/* Meta */}
-                  <div style={{ display: "flex", gap: 12, marginTop: 10, fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>
-                    {note.createdByName && <span>Created by {note.createdByName}</span>}
-                    {note.created_at && <span>{new Date(note.created_at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>}
-                    {note.updatedByName && <span style={{ color: T.accent }}>· Edited by {note.updatedByName} {note.updated_at ? new Date(note.updated_at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CoachVideoManager({ athleteId, token }) {
-  const [videos, setVideos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ title: "", youtubeUrl: "", category: "General" });
-  const [saving, setSaving] = useState(false);
-
-  const VIDEO_CATEGORIES = ["General", "Nutrition", "Training", "Recovery", "Mindset"];
-
-  const loadVideos = async () => {
-    try {
-      const rows = await apiFetch(`/coach-videos/${athleteId}`, token);
-      setVideos(Array.isArray(rows) ? rows : []);
-    } catch { setVideos([]); }
-  };
-
-  useEffect(() => {
-    if (!athleteId || !token) return;
-    (async () => { setLoading(true); await loadVideos(); setLoading(false); })();
-  }, [athleteId, token]);
-
-  const addVideo = async () => {
-    if (!form.title.trim() || !form.youtubeUrl.trim()) return;
-    setSaving(true);
-    try {
-      await apiFetch("/coach-videos", token, {
-        method: "POST",
-        body: JSON.stringify({ title: form.title.trim(), youtubeUrl: form.youtubeUrl.trim(), category: form.category, athleteId }),
-      });
-      setForm({ title: "", youtubeUrl: "", category: "General" });
-      await loadVideos();
-    } catch (e) { alert(e.message); }
-    setSaving(false);
-  };
-
-  const addVideoForAll = async () => {
-    if (!form.title.trim() || !form.youtubeUrl.trim()) return;
-    setSaving(true);
-    try {
-      await apiFetch("/coach-videos", token, {
-        method: "POST",
-        body: JSON.stringify({ title: form.title.trim(), youtubeUrl: form.youtubeUrl.trim(), category: form.category, athleteId: null }),
-      });
-      setForm({ title: "", youtubeUrl: "", category: "General" });
-      await loadVideos();
-    } catch (e) { alert(e.message); }
-    setSaving(false);
-  };
-
-  const deleteVideo = async (id) => {
-    try {
-      await apiFetch(`/coach-videos/${id}`, token, { method: "DELETE" });
-      await loadVideos();
-    } catch (e) { alert(e.message); }
-  };
-
-  // Extract YouTube ID for thumbnail preview
-  const extractYtId = (url) => {
-    const m = (url || "").match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([a-zA-Z0-9_-]{11})/);
-    return m ? m[1] : null;
-  };
-
-  return (
-    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>YOUTUBE VIDEOS</div>
-
-      {/* Add video form */}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 3fr 1fr", gap: 8, marginBottom: 8, alignItems: "end" }}>
-        <div>
-          <label style={labelStyle}>Title</label>
-          <input value={form.title} onChange={e => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Hitting Your Protein Target" style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>YouTube URL</label>
-          <input value={form.youtubeUrl} onChange={e => setForm(p => ({...p, youtubeUrl: e.target.value}))} placeholder="https://youtube.com/watch?v=..." style={inputStyle} />
-        </div>
-        <div>
-          <label style={labelStyle}>Category</label>
-          <select value={form.category} onChange={e => setForm(p => ({...p, category: e.target.value}))} style={{...inputStyle, cursor: "pointer"}}>
-            {VIDEO_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-      </div>
-      {/* Preview */}
-      {extractYtId(form.youtubeUrl) && (
-        <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 10 }}>
-          <img src={`https://img.youtube.com/vi/${extractYtId(form.youtubeUrl)}/default.jpg`} alt="preview" style={{ width: 60, height: 45, borderRadius: 6, objectFit: "cover" }} />
-          <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>✓ Valid YouTube link detected</span>
-        </div>
-      )}
-      {/* Buttons */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <button onClick={addVideo} disabled={saving || !form.title.trim() || !form.youtubeUrl.trim()} style={{
-          background: form.title.trim() && form.youtubeUrl.trim() ? T.accent : T.border,
-          color: form.title.trim() && form.youtubeUrl.trim() ? T.bg : T.muted,
-          border: "none", borderRadius: 10, padding: "10px 16px",
-          fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5,
-          cursor: form.title.trim() && form.youtubeUrl.trim() && !saving ? "pointer" : "default",
-        }} type="button">{saving ? "…" : "ADD FOR THIS ATHLETE"}</button>
-        <button onClick={addVideoForAll} disabled={saving || !form.title.trim() || !form.youtubeUrl.trim()} style={{
-          background: form.title.trim() && form.youtubeUrl.trim() ? T.coachGreen : T.border,
-          color: form.title.trim() && form.youtubeUrl.trim() ? "#fff" : T.muted,
-          border: "none", borderRadius: 10, padding: "10px 16px",
-          fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5,
-          cursor: form.title.trim() && form.youtubeUrl.trim() && !saving ? "pointer" : "default",
-        }} type="button">{saving ? "…" : "ADD FOR ALL ATHLETES"}</button>
-      </div>
-
-      {/* Video list */}
-      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : videos.length === 0 ? (
-        <div style={{ color: T.muted, fontSize: 12 }}>No videos yet. Add a YouTube link above.</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {videos.map(v => {
-            const ytId = v.youtube_id || extractYtId(v.youtube_url);
-            const isGlobal = !v.athlete_id;
-            return (
-              <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 12px", background: T.surface, borderRadius: 10 }}>
-                {ytId && <img src={`https://img.youtube.com/vi/${ytId}/default.jpg`} alt="" style={{ width: 80, height: 45, borderRadius: 6, objectFit: "cover", flexShrink: 0 }} />}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: T.text }}>{v.title}</div>
-                  <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 3 }}>
-                    <span style={{ background: (isGlobal ? T.coachGreen : T.accent) + "22", color: isGlobal ? T.coachGreen : T.accent, borderRadius: 4, padding: "1px 6px", fontFamily: "DM Sans", fontSize: 9, fontWeight: 600 }}>{isGlobal ? "ALL ATHLETES" : "THIS ATHLETE"}</span>
-                    <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>{v.category}</span>
-                    {v.created_at && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted }}>{new Date(v.created_at).toLocaleDateString('en-GB', { day: "numeric", month: "short" })}</span>}
-                  </div>
-                </div>
-                <button onClick={() => deleteVideo(v.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
-              </div>
-            );
-          })}
-        </div>
       )}
     </div>
   );
@@ -3001,328 +2622,6 @@ function AdminPanel({ token, myId }) {
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   Batch Import Modal — CSV upload to create multiple athletes with welcome emails
-────────────────────────────────────────────────────────────────────────────── */
-function BatchImportModal({ token, onClose, onComplete }) {
-  const [step, setStep] = useState("upload"); // upload | preview | importing | results
-  const [csvRows, setCsvRows] = useState([]);
-  const [parseError, setParseError] = useState("");
-  const [sendEmails, setSendEmails] = useState(true);
-  const [progress, setProgress] = useState(0);
-  const [results, setResults] = useState(null);
-
-  // Parse CSV text
-  const parseCSV = (text) => {
-    const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-    if (lines.length < 2) { setParseError("CSV needs a header row + at least one data row"); return; }
-
-    const header = lines[0].toLowerCase().split(",").map(h => h.trim().replace(/"/g, ""));
-    const nameIdx = header.findIndex(h => h === "name" || h === "full name" || h === "athlete");
-    const emailIdx = header.findIndex(h => h === "email" || h === "e-mail" || h === "email address");
-    const sportIdx = header.findIndex(h => h === "sport" || h === "discipline");
-
-    if (nameIdx === -1 || emailIdx === -1) {
-      setParseError('CSV must have "name" and "email" columns. Optional: "sport". Found: ' + header.join(", "));
-      return;
-    }
-
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-      // Simple CSV parsing (handles quoted commas)
-      const parts = [];
-      let current = "", inQuote = false;
-      for (const ch of lines[i]) {
-        if (ch === '"') { inQuote = !inQuote; continue; }
-        if (ch === "," && !inQuote) { parts.push(current.trim()); current = ""; continue; }
-        current += ch;
-      }
-      parts.push(current.trim());
-
-      const name = parts[nameIdx] || "";
-      const email = parts[emailIdx] || "";
-      const sport = sportIdx >= 0 ? (parts[sportIdx] || "") : "";
-
-      if (name && email) {
-        rows.push({ name, email, sport, valid: /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) });
-      }
-    }
-
-    if (rows.length === 0) { setParseError("No valid rows found in CSV"); return; }
-    setParseError("");
-    setCsvRows(rows);
-    setStep("preview");
-  };
-
-  const handleFile = (file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => parseCSV(e.target.result);
-    reader.readAsText(file);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    const file = e.dataTransfer?.files?.[0];
-    if (file) handleFile(file);
-  };
-
-  const startImport = async () => {
-    const validRows = csvRows.filter(r => r.valid);
-    if (validRows.length === 0) return;
-    setStep("importing");
-    setProgress(0);
-
-    try {
-      const res = await apiFetch("/athletes/batch", token, {
-        method: "POST",
-        body: JSON.stringify({ athletes: validRows.map(r => ({ name: r.name, email: r.email, sport: r.sport })), sendEmails }),
-      });
-      setResults(res);
-      setStep("results");
-    } catch (e) {
-      setResults({ error: e.message });
-      setStep("results");
-    }
-  };
-
-  const validCount = csvRows.filter(r => r.valid).length;
-  const invalidCount = csvRows.filter(r => !r.valid).length;
-
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "#000000dd", zIndex: 600, display: "flex", alignItems: "center", justifyContent: "center" }}
-      onClick={(e) => { if (e.target === e.currentTarget && step !== "importing") onClose(); }}>
-      <div style={{ background: T.card, border: `1px solid ${T.coachGreen}55`, borderRadius: 20, padding: 28, width: "100%", maxWidth: 600, maxHeight: "85vh", overflowY: "auto" }}>
-
-        {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>
-            {step === "upload" && "📥 BATCH IMPORT ATHLETES"}
-            {step === "preview" && "PREVIEW IMPORT"}
-            {step === "importing" && "IMPORTING..."}
-            {step === "results" && "IMPORT COMPLETE"}
-          </div>
-          {step !== "importing" && (
-            <button onClick={onClose} style={{ background: "none", border: "none", color: T.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
-          )}
-        </div>
-
-        {/* STEP 1: Upload */}
-        {step === "upload" && (
-          <div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginBottom: 16, lineHeight: 1.5 }}>
-              Upload a CSV file with columns: <strong style={{ color: T.text }}>name</strong>, <strong style={{ color: T.text }}>email</strong>, and optionally <strong style={{ color: T.text }}>sport</strong>.
-              Each athlete will receive a welcome email with their temporary login credentials.
-            </div>
-
-            {/* Drop zone */}
-            <div
-              onDragOver={e => e.preventDefault()}
-              onDrop={handleDrop}
-              style={{
-                border: `2px dashed ${T.border}`, borderRadius: 14, padding: "40px 20px",
-                textAlign: "center", marginBottom: 16, cursor: "pointer", transition: "all 0.2s",
-              }}
-              onClick={() => document.getElementById("csv-file-input")?.click()}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = T.coachGreen; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = T.border; }}
-            >
-              <div style={{ fontSize: 36, marginBottom: 8 }}>📄</div>
-              <div style={{ fontFamily: "DM Sans", fontSize: 13, color: T.text, fontWeight: 600 }}>
-                Drop CSV file here or click to browse
-              </div>
-              <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 4 }}>
-                Accepts .csv files up to 100 athletes
-              </div>
-              <input
-                id="csv-file-input"
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={e => handleFile(e.target.files?.[0])}
-              />
-            </div>
-
-            {parseError && (
-              <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "10px 14px", color: T.danger, fontFamily: "DM Sans", fontSize: 12, marginBottom: 14 }}>
-                {parseError}
-              </div>
-            )}
-
-            {/* Example format */}
-            <div style={{ background: T.surface, borderRadius: 10, padding: 14, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, lineHeight: 1.8 }}>
-              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Example CSV format:</div>
-              name,email,sport<br/>
-              John Smith,john@example.com,Rugby<br/>
-              Jane Doe,jane@example.com,Athletics<br/>
-              Mike Wilson,mike@example.com,Boxing
-            </div>
-          </div>
-        )}
-
-        {/* STEP 2: Preview */}
-        {step === "preview" && (
-          <div>
-            <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-              <div style={{ background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`, borderRadius: 8, padding: "8px 14px", flex: 1, textAlign: "center" }}>
-                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 24, color: T.coachGreen }}>{validCount}</div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>VALID</div>
-              </div>
-              {invalidCount > 0 && (
-                <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "8px 14px", flex: 1, textAlign: "center" }}>
-                  <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 24, color: T.danger }}>{invalidCount}</div>
-                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>INVALID EMAIL</div>
-                </div>
-              )}
-            </div>
-
-            {/* Preview table */}
-            <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 16, border: `1px solid ${T.border}`, borderRadius: 10 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: "DM Sans", fontSize: 11 }}>
-                <thead>
-                  <tr style={{ background: T.surface }}>
-                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>NAME</th>
-                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>EMAIL</th>
-                    <th style={{ padding: "8px 12px", textAlign: "left", color: T.muted, fontSize: 10, letterSpacing: 1 }}>SPORT</th>
-                    <th style={{ padding: "8px 12px", textAlign: "center", color: T.muted, fontSize: 10 }}>STATUS</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {csvRows.map((r, i) => (
-                    <tr key={i} style={{ borderTop: `1px solid ${T.border}20` }}>
-                      <td style={{ padding: "8px 12px", color: T.text }}>{r.name}</td>
-                      <td style={{ padding: "8px 12px", color: T.text, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>{r.email}</td>
-                      <td style={{ padding: "8px 12px", color: T.muted }}>{r.sport || "—"}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "center" }}>
-                        {r.valid ? <span style={{ color: T.coachGreen }}>✓</span> : <span style={{ color: T.danger, fontSize: 10 }}>Invalid email</span>}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Send emails toggle */}
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, padding: "10px 14px", background: T.surface, borderRadius: 10 }}>
-              <button
-                onClick={() => setSendEmails(!sendEmails)}
-                style={{
-                  width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
-                  background: sendEmails ? T.coachGreen : T.border, position: "relative", transition: "background 0.2s",
-                }}
-              >
-                <div style={{
-                  width: 18, height: 18, borderRadius: "50%", background: "#fff",
-                  position: "absolute", top: 2, left: sendEmails ? 20 : 2, transition: "left 0.2s",
-                }} />
-              </button>
-              <div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: T.text }}>
-                  Send welcome emails
-                </div>
-                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>
-                  Each athlete receives their login credentials via email
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={() => { setStep("upload"); setCsvRows([]); }} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1, color: T.muted, cursor: "pointer", flex: 1 }}>BACK</button>
-              <button onClick={startImport} disabled={validCount === 0} style={{
-                background: validCount > 0 ? T.coachGreen : T.border, color: validCount > 0 ? "#fff" : T.muted,
-                border: "none", borderRadius: 10, padding: "10px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5, cursor: validCount > 0 ? "pointer" : "default", flex: 2,
-              }}>IMPORT {validCount} ATHLETE{validCount !== 1 ? "S" : ""}</button>
-            </div>
-          </div>
-        )}
-
-        {/* STEP 3: Importing */}
-        {step === "importing" && (
-          <div style={{ textAlign: "center", padding: "30px 0" }}>
-            <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 16 }}>
-              {[0,1,2].map(i => <div key={i} style={{ width: 10, height: 10, borderRadius: "50%", background: T.coachGreen, animation: `pulse 1s infinite ${i * 0.25}s` }} />)}
-            </div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 14, color: T.text, fontWeight: 600 }}>
-              Creating accounts and sending emails...
-            </div>
-            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 6 }}>
-              This may take a moment for large batches
-            </div>
-          </div>
-        )}
-
-        {/* STEP 4: Results */}
-        {step === "results" && results && (
-          <div>
-            {results.error ? (
-              <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: 16, color: T.danger, fontFamily: "DM Sans", fontSize: 12, marginBottom: 16 }}>
-                Import failed: {results.error}
-              </div>
-            ) : (
-              <>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
-                  {[
-                    { label: "TOTAL", val: results.total, color: T.accent },
-                    { label: "CREATED", val: results.created, color: T.coachGreen },
-                    { label: "EMAILED", val: results.emailed, color: "#3b82f6" },
-                    { label: "FAILED", val: results.failed + results.exists, color: results.failed + results.exists > 0 ? T.danger : T.muted },
-                  ].map(s => (
-                    <div key={s.label} style={{ background: `${s.color}15`, border: `1px solid ${s.color}33`, borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
-                      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 28, color: s.color }}>{s.val}</div>
-                      <div style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>{s.label}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Detailed results */}
-                {results.results && (
-                  <div style={{ maxHeight: 250, overflowY: "auto", marginBottom: 16, border: `1px solid ${T.border}`, borderRadius: 10 }}>
-                    {results.results.map((r, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${T.border}15` }}>
-                        <span style={{
-                          width: 20, height: 20, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10,
-                          background: r.status === "created" ? `${T.coachGreen}22` : r.status === "exists" ? `${T.accent}22` : `${T.danger}22`,
-                          color: r.status === "created" ? T.coachGreen : r.status === "exists" ? T.accent : T.danger,
-                        }}>{r.status === "created" ? "✓" : r.status === "exists" ? "!" : "✕"}</span>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.text, fontWeight: 500 }}>{r.name}</div>
-                          <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{r.email}</div>
-                        </div>
-                        <div style={{ fontFamily: "DM Sans", fontSize: 10, color: r.status === "created" ? T.coachGreen : r.status === "exists" ? T.accent : T.danger }}>
-                          {r.status === "created" ? (r.emailSent ? "Created + emailed" : "Created (no email)") : r.status === "exists" ? "Already exists" : r.error}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Temp passwords (only shown if emails failed) */}
-                {results.results?.some(r => r.status === "created" && !r.emailSent) && (
-                  <div style={{ background: `${T.accent}12`, border: `1px solid ${T.accent}33`, borderRadius: 10, padding: 14, marginBottom: 16 }}>
-                    <div style={{ fontFamily: "DM Sans", fontSize: 11, fontWeight: 600, color: T.accent, marginBottom: 8 }}>
-                      ⚠ Some emails failed — temporary passwords shown below (save these!)
-                    </div>
-                    {results.results.filter(r => r.status === "created" && !r.emailSent).map((r, i) => (
-                      <div key={i} style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.text, marginBottom: 3 }}>
-                        {r.email}: <strong style={{ color: T.accent }}>{r.tempPassword}</strong>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-
-            <button onClick={onComplete} style={{
-              width: "100%", background: T.accent, color: T.bg, border: "none", borderRadius: 10,
-              padding: "12px", fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, cursor: "pointer",
-            }}>DONE</button>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 export default function CoachCMS() {
   const [me, setMe] = useState(null); // { id, email, name, role, token }
   const [token, setToken] = useState(null);
@@ -3335,7 +2634,6 @@ export default function CoachCMS() {
   const [showAdd, setShowAdd] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
-  const [showBatchImport, setShowBatchImport] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -3607,23 +2905,6 @@ export default function CoachCMS() {
               >
                 + ADD ATHLETE
               </button>
-              <button
-                onClick={() => setShowBatchImport(true)}
-                style={{
-                  background: T.coachGreen,
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 10,
-                  padding: "10px 18px",
-                  fontFamily: "Bebas Neue, system-ui",
-                  fontSize: 14,
-                  letterSpacing: 1.5,
-                  cursor: "pointer",
-                }}
-                type="button"
-              >
-                📥 BATCH IMPORT
-              </button>
               </div>
             </div>
 
@@ -3744,27 +3025,6 @@ export default function CoachCMS() {
           token={token}
           athleteCount={athletes.length}
           onClose={() => setShowBroadcast(false)}
-        />
-      )}
-
-      {showBatchImport && (
-        <BatchImportModal
-          token={token}
-          onClose={() => setShowBatchImport(false)}
-          onComplete={async () => {
-            setShowBatchImport(false);
-            // Refresh athlete list
-            try {
-              const rows = await apiFetch("/athletes", token);
-              if (Array.isArray(rows)) {
-                setAthletes(rows.map(a => ({
-                  id: a.id, name: a.name, email: a.email, sport: a.sport || "—",
-                  avatar: initialsOf(a.name), avatarColor: randomAvatarColor(),
-                  macroGoals: a.macroGoals || { calories: 2500, protein: 180, carbs: 280, fat: 75 },
-                })));
-              }
-            } catch {}
-          }}
         />
       )}
     </div>

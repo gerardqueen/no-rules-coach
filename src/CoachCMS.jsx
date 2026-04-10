@@ -1993,7 +1993,7 @@ function CoachMessaging({ athleteId, athleteName, token }) {
               ) : threadMessages.length === 0 ? (
                 <div style={{ color: T.muted, fontSize: 11, textAlign: "center", padding: 20 }}>No messages in this thread.</div>
               ) : threadMessages.map(m => {
-                const isCoach = m.fromId !== athleteId;
+                const isCoach = Number(m.fromId) !== Number(athleteId);
                 return (
                   <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 8 }}>
                     <div style={{
@@ -2469,7 +2469,7 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                   No messages yet. Start the conversation with {activeAthlete?.name}!
                 </div>
               ) : messages.map((m) => {
-                const isCoach = m.fromId !== athleteIdFromActive;
+                const isCoach = Number(m.fromId) !== Number(athleteIdFromActive);
                 const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
                 return (
                   <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>

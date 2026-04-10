@@ -1060,86 +1060,148 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   Athlete Calendar Manager — view + add events for athlete
+   Athlete Check-in Manager — view + add coach check-in notes
 ────────────────────────────────────────────────────────────────────────────── */
-function CoachMealsViewer({ athleteId, token }) {
-  const [meals, setMeals] = useState([]);
+function AthleteCheckInManager({ athleteId, token }) {
+  const [checkins, setCheckins] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(null);
+  const [form, setForm] = useState({ date: "", title: "", notes: "", linkUrl: "" });
+  const [saving, setSaving] = useState(false);
 
-  const load = async () => {
-    if (!athleteId || !token) return;
+  const loadCheckins = async () => {
     try {
-      const rows = await apiFetch(`/meals/${athleteId}`, token);
-      setMeals(Array.isArray(rows) ? rows : []);
-    } catch { setMeals([]); }
-    setLoading(false);
+      const rows = await apiFetch(`/checkins/${athleteId}`, token);
+      setCheckins(Array.isArray(rows) ? rows : []);
+    } catch { setCheckins([]); }
   };
 
-  useEffect(() => { setLoading(true); load(); }, [athleteId, token]);
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      await loadCheckins();
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+
+  const addCheckin = async () => {
+    if (!form.date || !form.notes.trim()) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/checkins/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          date: form.date,
+          title: form.title.trim() || "Check-in",
+          notes: form.notes.trim(),
+          linkUrl: form.linkUrl.trim() || null,
+        }),
+      });
+      setForm({ date: "", title: "", notes: "", linkUrl: "" });
+      await loadCheckins();
+    } catch (e) { alert(e.message || "Could not save check-in"); }
+    setSaving(false);
+  };
+
+  const deleteCheckin = async (id) => {
+    if (!confirm("Delete this check-in note?")) return;
+    try {
+      await apiFetch(`/checkins/${athleteId}/${id}`, token, { method: "DELETE" });
+      await loadCheckins();
+    } catch (e) { alert(e.message || "Could not delete"); }
+  };
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>SAVED MEALS</div>
-        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginTop: 2 }}>
-          Meal templates the athlete has saved for quick-add. Useful for identifying patterns and recommending adjustments.
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 4 }}>CHECK-IN NOTES</div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16 }}>
+        Notes logged after each check-in call or review. Visible to the athlete in their Check-ins tab.
+      </div>
+
+      {/* Add check-in form */}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.accent, fontWeight: 600, marginBottom: 10, letterSpacing: 1, textTransform: "uppercase" }}>+ NEW CHECK-IN</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
+          <div>
+            <label style={labelStyle}>Date *</label>
+            <input type="date" value={form.date} onChange={(e) => setForm(p => ({ ...p, date: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Title</label>
+            <input value={form.title} onChange={(e) => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Weekly Review" style={inputStyle} />
+          </div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <label style={labelStyle}>Notes *</label>
+          <textarea
+            value={form.notes}
+            onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))}
+            placeholder="What did you discuss? What's the plan going forward?"
+            rows={4}
+            style={{ ...inputStyle, resize: "vertical", minHeight: 80, fontFamily: "DM Sans" }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
+          <div style={{ flex: 1 }}>
+            <label style={labelStyle}>Link (optional)</label>
+            <input value={form.linkUrl} onChange={(e) => setForm(p => ({ ...p, linkUrl: e.target.value }))} placeholder="https://…" style={inputStyle} />
+          </div>
+          <button onClick={addCheckin} disabled={saving || !form.date || !form.notes.trim()} style={{
+            background: form.date && form.notes.trim() ? T.accent : T.border,
+            color: form.date && form.notes.trim() ? T.bg : T.muted,
+            border: "none", borderRadius: 10, padding: "11px 18px",
+            fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+            cursor: form.date && form.notes.trim() && !saving ? "pointer" : "default",
+          }} type="button">{saving ? "SAVING…" : "SAVE"}</button>
         </div>
       </div>
 
-      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : meals.length === 0 ? (
-        <div style={{ color: T.muted, fontSize: 12, padding: "20px 0", textAlign: "center" }}>
-          No saved meals yet. The athlete can create these from the Weekly Planner in their app.
-        </div>
+      {/* List existing check-ins */}
+      {loading ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
+      ) : checkins.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>No check-ins logged yet.</div>
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {meals.map((m) => {
-            const isExp = expanded === m.id;
-            const ingredients = m.ingredients || [];
-            return (
-              <div key={m.id} style={{
-                background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden",
-              }}>
-                <div onClick={() => setExpanded(isExp ? null : m.id)} style={{
-                  padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12,
-                }}>
-                  <span style={{ fontSize: 18 }}>🍽</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontFamily: "DM Sans", fontSize: 13, fontWeight: 600, color: T.text }}>{m.name}</div>
-                    <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>
-                      {ingredients.length} item{ingredients.length !== 1 ? "s" : ""} · {m.total_calories} cal · P {m.total_protein_g}g · C {m.total_carbs_g}g · F {m.total_fat_g}g
-                    </div>
-                  </div>
-                  <span style={{ color: T.muted, fontSize: 14 }}>{isExp ? "▾" : "▸"}</span>
+        <div style={{ maxHeight: 500, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+          {[...checkins].reverse().map((c) => (
+            <div key={c.id} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`, borderRadius: 6, padding: "3px 10px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.coachGreen, fontWeight: 600 }}>
+                    {c.date}
+                  </span>
+                  <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1, color: T.text }}>{c.title}</span>
                 </div>
-                {isExp && (
-                  <div style={{ padding: "4px 14px 14px", borderTop: `1px solid ${T.border}` }}>
-                    {ingredients.length === 0 ? <div style={{ fontSize: 11, color: T.muted, padding: "8px 0" }}>No ingredients</div> :
-                     ingredients.map((ing, i) => (
-                      <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: i < ingredients.length - 1 ? `1px solid ${T.border}30` : "none" }}>
-                        <span style={{ fontSize: 11, color: T.text, fontFamily: "DM Sans" }}>
-                          {ing.name} <span style={{ color: T.muted, fontSize: 9 }}>({ing.grams}g)</span>
-                        </span>
-                        <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
-                          {Math.round(ing.calories)} · {Math.round(ing.protein_g || 0)}p · {Math.round(ing.carbs_g || 0)}c · {Math.round(ing.fat_g || 0)}f
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <button onClick={() => deleteCheckin(c.id)} style={{
+                  background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6,
+                  padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer",
+                }} type="button">✕</button>
               </div>
-            );
-          })}
+              {c.notes && (
+                <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: c.linkUrl ? 8 : 0 }}>
+                  {c.notes}
+                </div>
+              )}
+              {c.linkUrl && (
+                <a href={c.linkUrl} target="_blank" rel="noopener noreferrer" style={{ fontFamily: "DM Sans", fontSize: 11, color: T.accent, textDecoration: "none" }}>
+                  🔗 {c.linkUrl}
+                </a>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Calendar Manager — view + add events for athlete
+────────────────────────────────────────────────────────────────────────────── */
 function AthleteCalendarManager({ athleteId, token }) {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", title: "", notes: "" });
+  const [form, setForm] = useState({ date: "", startTime: "", endTime: "", title: "", notes: "" });
   const [saving, setSaving] = useState(false);
 
   const loadEvents = async () => {
@@ -1162,11 +1224,24 @@ function AthleteCalendarManager({ athleteId, token }) {
     if (!form.date || !form.title.trim()) return;
     setSaving(true);
     try {
+      // Build full ISO timestamps if a time was provided; otherwise fall back to date-only
+      const startISO = form.startTime
+        ? new Date(`${form.date}T${form.startTime}:00`).toISOString()
+        : form.date;
+      const endISO = form.endTime
+        ? new Date(`${form.date}T${form.endTime}:00`).toISOString()
+        : startISO;
       await apiFetch(`/calendar-events/${athleteId}`, token, {
         method: "POST",
-        body: JSON.stringify({ date: form.date, title: form.title, startISO: form.date, endISO: form.date, notes: form.notes }),
+        body: JSON.stringify({
+          date: form.date,
+          title: form.title,
+          startISO,
+          endISO,
+          notes: form.notes,
+        }),
       });
-      setForm({ date: "", title: "", notes: "" });
+      setForm({ date: "", startTime: "", endTime: "", title: "", notes: "" });
       await loadEvents();
     } catch (e) { alert(e.message); }
     setSaving(false);
@@ -1179,47 +1254,80 @@ function AthleteCalendarManager({ athleteId, token }) {
     } catch (e) { alert(e.message); }
   };
 
+  // Format a stored event's time range for display
+  const formatEventTime = (ev) => {
+    if (!ev.startISO) return null;
+    try {
+      const s = new Date(ev.startISO);
+      // If it's just a date (no time), the ISO parsing gives midnight UTC — skip display
+      if (ev.startISO.length <= 10) return null;
+      const sStr = s.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+      if (ev.endISO && ev.endISO !== ev.startISO && ev.endISO.length > 10) {
+        const e = new Date(ev.endISO);
+        const eStr = e.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+        return `${sStr}–${eStr}`;
+      }
+      return sStr;
+    } catch { return null; }
+  };
+
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
       <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 14 }}>CALENDAR EVENTS</div>
 
       {/* Add event form */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 2fr auto", gap: 8, marginBottom: 14, alignItems: "end" }}>
-        <div>
-          <label style={labelStyle}>Date</label>
-          <input type="date" value={form.date} onChange={(e) => setForm(p => ({...p, date: e.target.value}))} style={inputStyle} />
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 8, marginBottom: 8 }}>
+          <div>
+            <label style={labelStyle}>Date *</label>
+            <input type="date" value={form.date} onChange={(e) => setForm(p => ({ ...p, date: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Start time</label>
+            <input type="time" value={form.startTime} onChange={(e) => setForm(p => ({ ...p, startTime: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>End time</label>
+            <input type="time" value={form.endTime} onChange={(e) => setForm(p => ({ ...p, endTime: e.target.value }))} style={inputStyle} />
+          </div>
         </div>
-        <div>
-          <label style={labelStyle}>Title</label>
-          <input value={form.title} onChange={(e) => setForm(p => ({...p, title: e.target.value}))} placeholder="e.g. Check-in call" style={inputStyle} />
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 2fr auto", gap: 8, alignItems: "end" }}>
+          <div>
+            <label style={labelStyle}>Title *</label>
+            <input value={form.title} onChange={(e) => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Check-in call" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Notes</label>
+            <input value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Optional notes" style={inputStyle} />
+          </div>
+          <button onClick={addEvent} disabled={saving || !form.date || !form.title.trim()} style={{
+            background: form.date && form.title.trim() ? T.accent : T.border,
+            color: form.date && form.title.trim() ? T.bg : T.muted,
+            border: "none", borderRadius: 10, padding: "11px 18px",
+            fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+            cursor: form.date && form.title.trim() && !saving ? "pointer" : "default",
+          }} type="button">{saving ? "…" : "ADD"}</button>
         </div>
-        <div>
-          <label style={labelStyle}>Notes</label>
-          <input value={form.notes} onChange={(e) => setForm(p => ({...p, notes: e.target.value}))} placeholder="Optional notes" style={inputStyle} />
-        </div>
-        <button onClick={addEvent} disabled={saving || !form.date || !form.title.trim()} style={{
-          background: form.date && form.title.trim() ? T.accent : T.border,
-          color: form.date && form.title.trim() ? T.bg : T.muted,
-          border: "none", borderRadius: 10, padding: "11px 16px",
-          fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
-          cursor: form.date && form.title.trim() && !saving ? "pointer" : "default",
-        }} type="button">{saving ? "…" : "ADD"}</button>
       </div>
 
       {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : events.length === 0 ? (
         <div style={{ color: T.muted, fontSize: 12 }}>No calendar events yet. Add one above.</div>
       ) : (
         <div style={{ maxHeight: 300, overflowY: "auto" }}>
-          {events.map((ev) => (
-            <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
-              <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
-                {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
+          {events.map((ev) => {
+            const timeStr = formatEventTime(ev);
+            return (
+              <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
+                {timeStr && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.coachGreen, whiteSpace: "nowrap" }}>{timeStr}</span>}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
+                  {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
+                </div>
+                <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
               </div>
-              <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -2100,7 +2208,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "messages", label: "MESSAGES" },
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
-    { id: "meals", label: "SAVED MEALS" },
+    { id: "checkins", label: "CHECK-INS" },
     { id: "calendar", label: "CALENDAR" },
   ];
 
@@ -2467,8 +2575,8 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
         <AthleteFoodLogViewer athleteId={athlete.id} token={token} macroTarget={goals} />
       )}
 
-      {tab === "meals" && (
-        <CoachMealsViewer athleteId={athlete.id} token={token} />
+      {tab === "checkins" && (
+        <AthleteCheckInManager athleteId={athlete.id} token={token} />
       )}
 
       {tab === "calendar" && (

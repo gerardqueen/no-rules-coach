@@ -1060,6 +1060,198 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Athlete Video Manager — send YouTube videos to athlete
+────────────────────────────────────────────────────────────────────────────── */
+function AthleteVideoManager({ athleteId, token }) {
+  const [videos, setVideos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ title: "", url: "", category: "General", notes: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const loadVideos = async () => {
+    try {
+      const rows = await apiFetch(`/coach-videos/${athleteId}`, token);
+      setVideos(Array.isArray(rows) ? rows : []);
+    } catch { setVideos([]); }
+  };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      await loadVideos();
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+
+  // Extract the 11-char YouTube ID from any valid URL/ID for preview purposes
+  const extractId = (input) => {
+    if (!input) return null;
+    const s = String(input).trim();
+    if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+    let m = s.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    m = s.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    m = s.match(/\/(?:embed|shorts|v)\/([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    return null;
+  };
+
+  const previewId = extractId(form.url);
+
+  const addVideo = async () => {
+    setError("");
+    if (!form.title.trim()) { setError("Title is required"); return; }
+    if (!previewId) { setError("Paste a valid YouTube URL (e.g. https://youtu.be/…) "); return; }
+    setSaving(true);
+    try {
+      await apiFetch(`/coach-videos/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          title: form.title.trim(),
+          url: form.url.trim(),
+          category: form.category,
+          notes: form.notes.trim() || null,
+        }),
+      });
+      setForm({ title: "", url: "", category: "General", notes: "" });
+      await loadVideos();
+    } catch (e) { setError(e.message || "Could not send video"); }
+    setSaving(false);
+  };
+
+  const deleteVideo = async (id) => {
+    if (!confirm("Remove this video from the athlete's dashboard?")) return;
+    try {
+      await apiFetch(`/coach-videos/${athleteId}/${id}`, token, { method: "DELETE" });
+      await loadVideos();
+    } catch (e) { alert(e.message || "Could not delete"); }
+  };
+
+  const CATEGORIES = ["General", "Technique", "Nutrition", "Mindset", "Recovery", "Warmup"];
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 4 }}>SEND VIDEO</div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16 }}>
+        Share a YouTube video with the athlete — it'll appear on their dashboard.
+      </div>
+
+      {/* Add video form */}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8, marginBottom: 8 }}>
+          <div>
+            <label style={labelStyle}>Title *</label>
+            <input value={form.title} onChange={(e) => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Squat technique breakdown" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Category</label>
+            <select value={form.category} onChange={(e) => setForm(p => ({ ...p, category: e.target.value }))} style={inputStyle}>
+              {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ marginBottom: 8 }}>
+          <label style={labelStyle}>YouTube URL *</label>
+          <input
+            value={form.url}
+            onChange={(e) => setForm(p => ({ ...p, url: e.target.value }))}
+            placeholder="https://www.youtube.com/watch?v=… or https://youtu.be/…"
+            style={inputStyle}
+          />
+        </div>
+        {previewId && (
+          <div style={{ marginBottom: 8, display: "flex", gap: 10, alignItems: "center", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: 8 }}>
+            <img src={`https://img.youtube.com/vi/${previewId}/default.jpg`} alt="Preview" style={{ width: 80, height: 60, borderRadius: 4, objectFit: "cover" }} />
+            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>
+              ✓ Video detected — ID: <span style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>{previewId}</span>
+            </div>
+          </div>
+        )}
+        <div style={{ marginBottom: 10 }}>
+          <label style={labelStyle}>Notes (optional)</label>
+          <input value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any context or instructions for the athlete" style={inputStyle} />
+        </div>
+        {error && (
+          <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "8px 12px", marginBottom: 10, fontSize: 11, color: T.danger, fontFamily: "DM Sans" }}>
+            {error}
+          </div>
+        )}
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={addVideo} disabled={saving || !form.title.trim() || !previewId} style={{
+            background: form.title.trim() && previewId ? T.accent : T.border,
+            color: form.title.trim() && previewId ? T.bg : T.muted,
+            border: "none", borderRadius: 10, padding: "10px 20px",
+            fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+            cursor: form.title.trim() && previewId && !saving ? "pointer" : "default",
+          }} type="button">{saving ? "SENDING…" : "📹 SEND VIDEO"}</button>
+        </div>
+      </div>
+
+      {/* Existing videos list */}
+      <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
+        Sent videos ({videos.length})
+      </div>
+      {loading ? (
+        <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div>
+      ) : videos.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 20 }}>
+          No videos sent yet. Share one above to get started.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 10, maxHeight: 500, overflowY: "auto" }}>
+          {videos.map((v) => (
+            <div key={v.id} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, overflow: "hidden", position: "relative" }}>
+              <div style={{ position: "relative", paddingBottom: "56.25%", background: "#000" }}>
+                <img
+                  src={`https://img.youtube.com/vi/${v.youtube_id}/mqdefault.jpg`}
+                  alt={v.title}
+                  style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                />
+                <a
+                  href={`https://www.youtube.com/watch?v=${v.youtube_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", textDecoration: "none" }}
+                >
+                  <div style={{ width: 42, height: 42, borderRadius: "50%", background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#fff" }}>▶</div>
+                </a>
+              </div>
+              <div style={{ padding: 10 }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: T.text, lineHeight: 1.3, marginBottom: 6, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                  {v.title}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6 }}>
+                  <span style={{ background: `${T.accent}22`, color: T.accent, borderRadius: 4, padding: "2px 6px", fontFamily: "DM Sans", fontSize: 9, fontWeight: 600 }}>
+                    {v.category || "General"}
+                  </span>
+                  <button onClick={() => deleteVideo(v.id)} style={{
+                    background: "none", border: `1px solid ${T.danger}44`, borderRadius: 4,
+                    padding: "2px 8px", color: T.danger, fontSize: 9, cursor: "pointer",
+                  }} type="button">✕</button>
+                </div>
+                {v.notes && (
+                  <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, marginTop: 6, lineHeight: 1.4 }}>
+                    {v.notes}
+                  </div>
+                )}
+                {v.created_at && (
+                  <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.border, marginTop: 6 }}>
+                    {new Date(v.created_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Athlete Check-in Manager — view + add coach check-in notes
 ────────────────────────────────────────────────────────────────────────────── */
 function AthleteCheckInManager({ athleteId, token }) {
@@ -2386,6 +2578,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
     { id: "checkins", label: "CHECK-INS" },
+    { id: "videos", label: "VIDEOS" },
     { id: "calendar", label: "CALENDAR" },
   ];
 
@@ -2754,6 +2947,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "checkins" && (
         <AthleteCheckInManager athleteId={athlete.id} token={token} />
+      )}
+
+      {tab === "videos" && (
+        <AthleteVideoManager athleteId={athlete.id} token={token} />
       )}
 
       {tab === "calendar" && (

@@ -196,6 +196,35 @@ const labelStyle = {
   marginBottom: 6,
 };
 
+// Weekly adherence cells shown on each roster row: calories + P/C/F % (days
+// within ±10% of target over the last 7 days) and days-logged (e.g. 5/7).
+// Colour: green ≥70%, amber 1–69%, muted when no data.
+function AdherenceCells({ a }) {
+  const col = (p) => (p == null ? T.muted : p >= 70 ? T.coachGreen : p >= 40 ? T.warn : T.danger);
+  const fmt = (p) => (p == null ? "—" : `${Math.round(p)}%`);
+  const cell = (label, p) => (
+    <div style={{ textAlign: "center", minWidth: 42 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, color: col(p), lineHeight: 1 }}>{fmt(p)}</div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 8, color: T.muted, letterSpacing: 0.5, marginTop: 2 }}>{label}</div>
+    </div>
+  );
+  const dl = a.daysLogged;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      {cell("CAL", a.adherencePct)}
+      {cell("P", a.proteinPct)}
+      {cell("C", a.carbsPct)}
+      {cell("F", a.fatPct)}
+      <div style={{ textAlign: "center", minWidth: 46, paddingLeft: 6, borderLeft: `1px solid ${T.border}` }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, color: dl == null ? T.muted : dl >= 5 ? T.coachGreen : dl >= 2 ? T.warn : T.danger, lineHeight: 1 }}>
+          {dl == null ? "—" : `${dl}/7`}
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 8, color: T.muted, letterSpacing: 0.5, marginTop: 2 }}>LOGGED</div>
+      </div>
+    </div>
+  );
+}
+
 /* ─────────────────────────────────────────────────────────────────────────────
    Coach Login
 ────────────────────────────────────────────────────────────────────────────── */
@@ -2443,7 +2472,22 @@ function AdminCoachOverview({ token, myId }) {
     setLoadingAthletes(true);
     try {
       const rows = await apiFetch(`/admin/coach/${coach.id}/athletes`, token);
-      setAthletes(Array.isArray(rows) ? rows : []);
+      let list = Array.isArray(rows) ? rows : [];
+      // Merge weekly adherence (admins can request any coach's overview).
+      try {
+        const ov = await apiFetch(`/coach/overview?days=7&coachId=${coach.id}`, token);
+        const byId = {};
+        (ov?.athletes || []).forEach((o) => { byId[o.id] = o; });
+        list = list.map((a) => byId[a.id] ? {
+          ...a,
+          adherencePct: byId[a.id].adherencePct,
+          proteinPct: byId[a.id].proteinPct,
+          carbsPct: byId[a.id].carbsPct,
+          fatPct: byId[a.id].fatPct,
+          daysLogged: byId[a.id].daysLogged,
+        } : a);
+      } catch { /* adherence optional */ }
+      setAthletes(list);
     } catch { setAthletes([]); }
     setLoadingAthletes(false);
   };
@@ -2501,6 +2545,7 @@ function AdminCoachOverview({ token, myId }) {
                 <Badge label={a.sport || "ATHLETE"} color={T.coachGreen} />
                 <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 2 }}>{a.email}</div>
               </div>
+              <AdherenceCells a={a} />
               {reassigning === a.id ? (
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                   <select value={targetCoach} onChange={(e) => setTargetCoach(e.target.value)} style={{
@@ -3500,6 +3545,21 @@ export default function CoachCMS() {
           macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
         }));
         setAthletes(mapped);
+
+        // Fetch weekly adherence (last 7 days) and merge onto each athlete row.
+        try {
+          const ov = await apiFetch("/coach/overview?days=7", token);
+          const byId = {};
+          (ov?.athletes || []).forEach((o) => { byId[o.id] = o; });
+          setAthletes((prev) => prev.map((a) => byId[a.id] ? {
+            ...a,
+            adherencePct: byId[a.id].adherencePct,
+            proteinPct: byId[a.id].proteinPct,
+            carbsPct: byId[a.id].carbsPct,
+            fatPct: byId[a.id].fatPct,
+            daysLogged: byId[a.id].daysLogged,
+          } : a));
+        } catch { /* overview optional; roster still shows without it */ }
       } catch (e) {
         setRosterErr(e.message);
       } finally {
@@ -3808,6 +3868,7 @@ export default function CoachCMS() {
                         {a.email}
                       </div>
                     </div>
+                    <AdherenceCells a={a} />
                     <div style={{ color: T.muted, fontSize: 12 }}>›</div>
                   </div>
                 ))

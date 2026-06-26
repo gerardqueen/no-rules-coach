@@ -196,30 +196,53 @@ const labelStyle = {
   marginBottom: 6,
 };
 
-// Weekly adherence cells shown on each roster row: calories + P/C/F % (days
-// within ±10% of target over the last 7 days) and days-logged (e.g. 5/7).
-// Colour: green ≥70%, amber 1–69%, muted when no data.
+// Weekly adherence cells shown on each roster row: calories + P/C/F adherence
+// (% of LOGGED days within ±10% of target over the last 7 days) and days-logged.
+//
+// IMPORTANT — days-logged governs the row. A "100%" built on a single logged
+// day is misleading (100% of 1 day looks identical to 100% of 7). So unless the
+// athlete has logged a meaningful chunk of the week, the percentages are dimmed
+// to grey and the days-logged figure (shown in red/amber) drives the signal.
+// Only when logging is solid do the percentages earn their colour bands, which
+// match the athlete-detail view exactly: ≥90% green, ≥75% amber, else red.
 function AdherenceCells({ a }) {
-  const col = (p) => (p == null ? T.muted : p >= 70 ? T.coachGreen : p >= 40 ? T.warn : T.danger);
+  const dl = a.daysLogged;
+  // How trustworthy is the % given how much was logged this week?
+  // trusted (≥5/7): show real colour bands. partial (3–4): show but tinted.
+  // weak (<3): dim the %s entirely so a high number can't read as "good".
+  const trust = dl == null ? "none" : dl >= 5 ? "full" : dl >= 3 ? "partial" : "weak";
+
+  const bandColour = (p) => {
+    if (p == null) return T.muted;
+    if (p >= 90) return T.coachGreen;   // matches detail view 90–110 green
+    if (p >= 75) return T.warn;         // matches detail view 75–125 amber
+    return T.danger;                    // outside
+  };
+  // When logging is too thin, the % is greyed regardless of its value.
+  const pctColour = (p) => (trust === "full" ? bandColour(p) : trust === "partial" ? (p == null ? T.muted : `${bandColour(p)}cc`) : T.muted);
   const fmt = (p) => (p == null ? "—" : `${Math.round(p)}%`);
+
   const cell = (label, p) => (
     <div style={{ textAlign: "center", minWidth: 42 }}>
-      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, color: col(p), lineHeight: 1 }}>{fmt(p)}</div>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, color: pctColour(p), lineHeight: 1, opacity: trust === "weak" ? 0.5 : 1 }}>{fmt(p)}</div>
       <div style={{ fontFamily: "DM Sans", fontSize: 8, color: T.muted, letterSpacing: 0.5, marginTop: 2 }}>{label}</div>
     </div>
   );
-  const dl = a.daysLogged;
+
+  // Days-logged is the dominant signal: green only when logging is solid.
+  const dlColour = dl == null ? T.muted : dl >= 5 ? T.coachGreen : dl >= 3 ? T.warn : T.danger;
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
       {cell("CAL", a.adherencePct)}
       {cell("P", a.proteinPct)}
       {cell("C", a.carbsPct)}
       {cell("F", a.fatPct)}
-      <div style={{ textAlign: "center", minWidth: 46, paddingLeft: 6, borderLeft: `1px solid ${T.border}` }}>
-        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, color: dl == null ? T.muted : dl >= 5 ? T.coachGreen : dl >= 2 ? T.warn : T.danger, lineHeight: 1 }}>
+      <div style={{ textAlign: "center", minWidth: 50, paddingLeft: 8, borderLeft: `1px solid ${T.border}` }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 17, color: dlColour, lineHeight: 1, fontWeight: 700 }}>
           {dl == null ? "—" : `${dl}/7`}
         </div>
-        <div style={{ fontFamily: "DM Sans", fontSize: 8, color: T.muted, letterSpacing: 0.5, marginTop: 2 }}>LOGGED</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 8, color: dl != null && dl < 3 ? T.danger : T.muted, letterSpacing: 0.5, marginTop: 2 }}>LOGGED</div>
       </div>
     </div>
   );

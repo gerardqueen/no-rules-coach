@@ -2113,6 +2113,307 @@ function BroadcastModal({ token, athleteCount, onClose, endpoint, label }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Broadcast Content Modal — send a YouTube video, PDF, or web link to
+   specific clients or all clients at once.
+
+   No backend changes required: this loops the existing per-athlete endpoint
+   POST /coach-videos/:athleteId once for each selected recipient.
+
+   The content `type` ("youtube" | "pdf" | "link") is folded into the existing
+   `category` field as "type:<type>|<category>" so the client app can tell them
+   apart without a schema change. (When you later add a real `type` column, you
+   can send it as its own field and drop this encoding.)
+
+   Props:
+     - token         : auth token (same one used elsewhere)
+     - athletes      : array of { id, name, ... } already loaded in the coach view
+     - onClose       : () => void
+────────────────────────────────────────────────────────────────────────────── */
+function BroadcastContentModal({ token, athletes, onClose }) {
+  const CATEGORIES = ["General", "Technique", "Nutrition", "Mindset", "Recovery", "Warmup"];
+  const TYPES = [
+    { key: "youtube", label: "🎬 YouTube", hint: "Paste a YouTube link" },
+    { key: "pdf", label: "📄 PDF", hint: "Paste a shared PDF link (Drive/Dropbox — set to ‘anyone with link can view’)" },
+    { key: "link", label: "🔗 Web Link", hint: "Paste any web address" },
+  ];
+
+  const [type, setType] = useState("youtube");
+  const [form, setForm] = useState({ title: "", url: "", category: "General", notes: "" });
+  const [selected, setSelected] = useState(() => new Set()); // athlete ids
+  const [sendToAll, setSendToAll] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0, failed: 0 });
+  const [result, setResult] = useState(null); // null | { ok, failed }
+  const [error, setError] = useState("");
+
+  // YouTube ID extraction (same logic as the per-athlete video manager)
+  const extractYouTubeId = (input) => {
+    if (!input) return null;
+    const s = String(input).trim();
+    if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+    let m = s.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    m = s.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    m = s.match(/\/(?:embed|shorts|v)\/([A-Za-z0-9_-]{11})/);
+    if (m) return m[1];
+    return null;
+  };
+
+  const previewId = type === "youtube" ? extractYouTubeId(form.url) : null;
+
+  // Basic URL sanity check for pdf/link types
+  const looksLikeUrl = (s) => {
+    if (!s) return false;
+    try { const u = new URL(s.trim()); return u.protocol === "http:" || u.protocol === "https:"; }
+    catch { return false; }
+  };
+
+  const urlValid =
+    type === "youtube" ? !!previewId : looksLikeUrl(form.url);
+
+  const recipients = sendToAll ? athletes.map(a => a.id) : Array.from(selected);
+  const canSend = form.title.trim() && urlValid && recipients.length > 0 && !sending;
+
+  const toggleAthlete = (id) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const send = async () => {
+    setError("");
+    if (!form.title.trim()) { setError("Title is required"); return; }
+    if (!urlValid) {
+      setError(type === "youtube" ? "Paste a valid YouTube URL" : "Paste a valid http(s) URL"); return;
+    }
+    if (recipients.length === 0) { setError("Select at least one client (or choose ‘All clients’)"); return; }
+
+    setSending(true);
+    setProgress({ done: 0, total: recipients.length, failed: 0 });
+
+    // Fold the content type into category so the client app can distinguish
+    // videos / pdfs / links without a backend schema change.
+    const encodedCategory = `type:${type}|${form.category}`;
+
+    let ok = 0, failed = 0;
+    for (const athleteId of recipients) {
+      try {
+        await apiFetch(`/coach-videos/${athleteId}`, token, {
+          method: "POST",
+          body: JSON.stringify({
+            title: form.title.trim(),
+            url: form.url.trim(),
+            category: encodedCategory,
+            notes: form.notes.trim() || null,
+          }),
+        });
+        ok += 1;
+      } catch (e) {
+        failed += 1;
+      }
+      setProgress(p => ({ ...p, done: p.done + 1, failed }));
+    }
+
+    setSending(false);
+    setResult({ ok, failed });
+    if (failed === 0) {
+      setTimeout(() => onClose(), 1600);
+    }
+  };
+
+  const activeType = TYPES.find(t => t.key === type);
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "#000000d0", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={(e) => e.target === e.currentTarget && !sending && onClose()}
+    >
+      <div style={{ width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22, padding: 24, animation: "fadeUp .2s ease" }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text, marginBottom: 6 }}>
+          SEND CONTENT TO CLIENTS
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 18 }}>
+          Share a video, PDF, or link with specific clients or your whole roster. It appears on their dashboard.
+        </div>
+
+        {result ? (
+          <div style={{
+            background: result.failed === 0 ? `${T.coachGreen}18` : `${T.warn}18`,
+            border: `1px solid ${result.failed === 0 ? T.coachGreen : T.warn}44`,
+            borderRadius: 12, padding: 18,
+            color: result.failed === 0 ? T.coachGreen : T.warn,
+            fontFamily: "DM Sans", fontSize: 13, textAlign: "center",
+          }}>
+            Sent to {result.ok} client{result.ok !== 1 ? "s" : ""}.
+            {result.failed > 0 && <div style={{ marginTop: 6 }}>{result.failed} failed — you can try resending to those.</div>}
+            {result.failed > 0 && (
+              <button onClick={() => setResult(null)} style={{
+                marginTop: 12, background: "none", border: `1px solid ${T.border}`, borderRadius: 8,
+                padding: "8px 16px", color: T.text, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer",
+              }} type="button">Back</button>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Content type selector */}
+            <label style={labelStyle}>Content type</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              {TYPES.map(t => (
+                <button
+                  key={t.key}
+                  onClick={() => { setType(t.key); setError(""); }}
+                  type="button"
+                  style={{
+                    flex: 1,
+                    background: type === t.key ? T.accent : T.surface,
+                    color: type === t.key ? T.bg : T.text,
+                    border: `1px solid ${type === t.key ? T.accent : T.border}`,
+                    borderRadius: 10, padding: "10px 8px",
+                    fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  }}
+                >{t.label}</button>
+              ))}
+            </div>
+
+            {/* Title + Category */}
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8, marginBottom: 10 }}>
+              <div>
+                <label style={labelStyle}>Title *</label>
+                <input value={form.title} onChange={(e) => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Squat technique breakdown" style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Category</label>
+                <select value={form.category} onChange={(e) => setForm(p => ({ ...p, category: e.target.value }))} style={inputStyle}>
+                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {/* URL */}
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>{activeType.label.replace(/^[^ ]+ /, "")} URL *</label>
+              <input
+                value={form.url}
+                onChange={(e) => setForm(p => ({ ...p, url: e.target.value }))}
+                placeholder={activeType.hint}
+                style={inputStyle}
+              />
+            </div>
+
+            {/* YouTube preview */}
+            {type === "youtube" && previewId && (
+              <div style={{ marginBottom: 10, display: "flex", gap: 10, alignItems: "center", background: T.bg, border: `1px solid ${T.border}`, borderRadius: 8, padding: 8 }}>
+                <img src={`https://img.youtube.com/vi/${previewId}/default.jpg`} alt="Preview" style={{ width: 80, height: 60, borderRadius: 4, objectFit: "cover" }} />
+                <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>
+                  ✓ Video detected — ID: <span style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>{previewId}</span>
+                </div>
+              </div>
+            )}
+
+            {/* PDF / link validity hint */}
+            {type !== "youtube" && form.url && (
+              <div style={{ marginBottom: 10, fontFamily: "DM Sans", fontSize: 11, color: urlValid ? T.coachGreen : T.danger }}>
+                {urlValid ? "✓ Looks like a valid link" : "Enter a full http(s):// address"}
+              </div>
+            )}
+
+            {type === "pdf" && (
+              <div style={{ marginBottom: 10, fontFamily: "DM Sans", fontSize: 10, color: T.muted, lineHeight: 1.5, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: 10 }}>
+                Tip: upload your PDF to Google Drive or Dropbox, set sharing to “anyone with the link can view,” then paste that link here.
+              </div>
+            )}
+
+            {/* Notes */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Notes (optional)</label>
+              <input value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Any context or instructions for the client" style={inputStyle} />
+            </div>
+
+            {/* Recipients */}
+            <label style={labelStyle}>Recipients</label>
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <button
+                onClick={() => setSendToAll(true)}
+                type="button"
+                style={{
+                  flex: 1,
+                  background: sendToAll ? T.coachGreen : T.surface,
+                  color: sendToAll ? T.bg : T.text,
+                  border: `1px solid ${sendToAll ? T.coachGreen : T.border}`,
+                  borderRadius: 10, padding: "10px 8px",
+                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >All clients ({athletes.length})</button>
+              <button
+                onClick={() => setSendToAll(false)}
+                type="button"
+                style={{
+                  flex: 1,
+                  background: !sendToAll ? T.accent : T.surface,
+                  color: !sendToAll ? T.bg : T.text,
+                  border: `1px solid ${!sendToAll ? T.accent : T.border}`,
+                  borderRadius: 10, padding: "10px 8px",
+                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >Specific clients{!sendToAll && selected.size > 0 ? ` (${selected.size})` : ""}</button>
+            </div>
+
+            {/* Specific-client picker */}
+            {!sendToAll && (
+              <div style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10, padding: 8, marginBottom: 14 }}>
+                {athletes.length === 0 ? (
+                  <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 12 }}>No clients on your roster yet.</div>
+                ) : athletes.map(a => {
+                  const checked = selected.has(a.id);
+                  return (
+                    <label key={a.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 6px", cursor: "pointer", borderRadius: 8, background: checked ? `${T.accent}14` : "transparent" }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleAthlete(a.id)} style={{ accentColor: T.accent, width: 16, height: 16 }} />
+                      <span style={{ fontFamily: "DM Sans", fontSize: 13, color: T.text }}>{a.name}</span>
+                      {a.email && <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginLeft: "auto" }}>{a.email}</span>}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {error && (
+              <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "8px 12px", marginBottom: 12, fontSize: 11, color: T.danger, fontFamily: "DM Sans" }}>
+                {error}
+              </div>
+            )}
+
+            {sending && (
+              <div style={{ marginBottom: 12, fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>
+                Sending… {progress.done}/{progress.total}{progress.failed > 0 ? ` (${progress.failed} failed)` : ""}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => !sending && onClose()} style={{
+                flex: 1, background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: 11,
+                color: T.muted, fontFamily: "DM Sans", fontSize: 13, cursor: sending ? "default" : "pointer",
+              }} type="button">Cancel</button>
+              <button onClick={send} disabled={!canSend} style={{
+                flex: 2, background: canSend ? T.accent : T.border, color: canSend ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: 11,
+                fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5,
+                cursor: canSend ? "pointer" : "default",
+              }} type="button">
+                {sending ? "SENDING…" : sendToAll ? `SEND TO ALL ${athletes.length}` : `SEND TO ${recipients.length || 0}`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Admin Coach Overview — shows all coaches, their athletes, and reassignment
 ────────────────────────────────────────────────────────────────────────────── */
 function AdminCoachOverview({ token, myId }) {
@@ -2524,6 +2825,42 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
 
+  // ── Header shows the PER-DAY plan target for TODAY (live) ────────────────────
+  // The header used to show averaged/default targets, so a carb-load day never
+  // bumped it. Now it reflects today's actual plan target. We refetch when the
+  // plan is saved so edits show immediately.
+  const DAYS_HDR = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+  const todayKey = (() => { const d = new Date().getDay(); return DAYS_HDR[d === 0 ? 6 : d - 1]; })();
+  const [planToday, setPlanToday] = useState(null);
+  const [planRefreshTick, setPlanRefreshTick] = useState(0);
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      if (!athlete?.id || !token) return;
+      try {
+        const rows = await apiFetch(`/macro-plans/${athlete.id}`, token);
+        if (ignore) return;
+        const row = (Array.isArray(rows) ? rows : []).find((r) => r.day_of_week === todayKey);
+        if (row) {
+          setPlanToday({
+            calories: Number(row.calories || 0),
+            protein: Number(row.protein_g || 0),
+            carbs: Number(row.carbs_g || 0),
+            fat: Number(row.fat_g || 0),
+          });
+        } else {
+          setPlanToday(null);
+        }
+      } catch { /* keep showing defaults */ }
+    })();
+    return () => { ignore = true; };
+  }, [athlete?.id, token, todayKey, planRefreshTick]);
+
+  // The header prefers today's plan target; falls back to the athlete's
+  // default targets if the coach hasn't set a plan for today.
+  const headerGoals = planToday || goals;
+
   // Load MFP username from profile
   useEffect(() => {
     (async () => {
@@ -2687,10 +3024,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-        <StatCard label="CAL TARGET" value={goals.calories} color={T.accent} unit="kcal" />
-        <StatCard label="PROTEIN" value={goals.protein} color={T.protein} unit="g" />
-        <StatCard label="CARBS" value={goals.carbs} color={T.carbs} unit="g" />
-        <StatCard label="FAT" value={goals.fat} color={T.fat} unit="g" />
+        <StatCard label={`CAL TARGET · ${todayKey}`} value={headerGoals.calories} color={T.accent} unit="kcal" />
+        <StatCard label="PROTEIN" value={headerGoals.protein} color={T.protein} unit="g" />
+        <StatCard label="CARBS" value={headerGoals.carbs} color={T.carbs} unit="g" />
+        <StatCard label="FAT" value={headerGoals.fat} color={T.fat} unit="g" />
       </div>
 
       <div style={{ display: "flex", borderBottom: `1px solid ${T.border}`, gap: 1, overflowX: "auto" }}>
@@ -2913,20 +3250,17 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "macroplan" && (
         <WeeklyMacroPlan athleteId={athlete.id} baseTargets={goals} token={token} onSaved={(p) => {
-        const tot = DAYS.reduce((a, d) => ({
-          calories: a.calories + Number(p[d].calories || 0),
-          protein: a.protein + Number(p[d].protein || 0),
-          carbs: a.carbs + Number(p[d].carbs || 0),
-          fat: a.fat + Number(p[d].fat || 0),
-        }), { calories: 0, protein: 0, carbs: 0, fat: 0 });
-        const next = {
-          calories: Math.round(tot.calories / 7),
-          protein: Math.round(tot.protein / 7),
-          carbs: Math.round(tot.carbs / 7),
-          fat: Math.round(tot.fat / 7),
-        };
-        setInitialGoals(next);
-        setGoals(next);
+        // Refresh the header from the saved per-day plan (today's target),
+        // rather than averaging the week — so a carb-load day shows correctly.
+        if (p && p[todayKey]) {
+          setPlanToday({
+            calories: Number(p[todayKey].calories || 0),
+            protein: Number(p[todayKey].protein || 0),
+            carbs: Number(p[todayKey].carbs || 0),
+            fat: Number(p[todayKey].fat || 0),
+          });
+        }
+        setPlanRefreshTick((t) => t + 1); // also re-fetch from backend to stay in sync
       }} />
       )}
 
@@ -3116,6 +3450,7 @@ export default function CoachCMS() {
   const [showAdd, setShowAdd] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
+  const [showBroadcastContent, setShowBroadcastContent] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -3370,6 +3705,25 @@ export default function CoachCMS() {
                 >
                   📢 BROADCAST
                 </button>
+                <button
+                  onClick={() => setShowBroadcastContent(true)}
+                  disabled={athletes.length === 0}
+                  style={{
+                    background: "none",
+                    border: `1px solid ${T.accent}44`,
+                    color: T.accent,
+                    borderRadius: 10,
+                    padding: "10px 14px",
+                    fontFamily: "Bebas Neue, system-ui",
+                    fontSize: 14,
+                    letterSpacing: 1.5,
+                    cursor: athletes.length > 0 ? "pointer" : "default",
+                    opacity: athletes.length > 0 ? 1 : 0.5,
+                  }}
+                  type="button"
+                >
+                  📤 SEND CONTENT
+                </button>
               <button
                 onClick={() => setShowAdd(true)}
                 style={{
@@ -3507,6 +3861,14 @@ export default function CoachCMS() {
           token={token}
           athleteCount={athletes.length}
           onClose={() => setShowBroadcast(false)}
+        />
+      )}
+
+      {showBroadcastContent && (
+        <BroadcastContentModal
+          token={token}
+          athletes={athletes}
+          onClose={() => setShowBroadcastContent(false)}
         />
       )}
     </div>

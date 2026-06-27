@@ -223,9 +223,14 @@ async function computeWeeklyAdherence(athleteId, token) {
     try { totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
     try { foodLogs = await apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
 
+    // Normalize any date shape (a plain "2026-06-26", a full ISO timestamp,
+    // or a Date) down to a "YYYY-MM-DD" key so logged days reliably match the
+    // day-by-day lookup below. A mismatch here silently drops a logged day.
+    const dayKeyOf = (v) => String(v).slice(0, 10);
+
     const byDate = {};
     (Array.isArray(totals) ? totals : []).forEach((r) => {
-      byDate[r.date] = {
+      byDate[dayKeyOf(r.date)] = {
         calories: Math.round(Number(r.calories || 0)),
         protein: Math.round(Number(r.protein_g || 0)),
         carbs: Math.round(Number(r.carbs_g || 0)),
@@ -233,10 +238,11 @@ async function computeWeeklyAdherence(athleteId, token) {
       };
     });
     (Array.isArray(foodLogs) ? foodLogs : []).forEach((fl) => {
-      if (byDate[fl.date]) return;
+      const k = dayKeyOf(fl.date);
+      if (byDate[k]) return;
       const foods = fl.foods || [];
       if (foods.length === 0) return;
-      byDate[fl.date] = {
+      byDate[k] = {
         calories: Math.round(foods.reduce((s, f) => s + Number(f.calories || 0), 0)),
         protein: Math.round(foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0)),
         carbs: Math.round(foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0)),
@@ -245,10 +251,14 @@ async function computeWeeklyAdherence(athleteId, token) {
     });
 
     const DAYS_MF = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
-    const within = (actual, target) => target > 0 && Math.abs(actual - target) / target <= 0.10;
+    // Average-of-daily-percentages over LOGGED days only. For each logged day we
+    // take actual ÷ target × 100, then average those across the days logged.
+    // This reflects "on average, how close to target are they" — so a string of
+    // low days (e.g. 18%, 30%) averages to a low number rather than collapsing
+    // to a pass/fail count.
     const acc = {
       daysLogged: 0,
-      cal: { logged: 0, ok: 0 }, p: { logged: 0, ok: 0 }, c: { logged: 0, ok: 0 }, f: { logged: 0, ok: 0 },
+      cal: { sum: 0, n: 0 }, p: { sum: 0, n: 0 }, c: { sum: 0, n: 0 }, f: { sum: 0, n: 0 },
     };
 
     for (let i = 6; i >= 0; i--) {
@@ -262,14 +272,14 @@ async function computeWeeklyAdherence(athleteId, token) {
       if (!isLogged) continue;
       acc.daysLogged += 1;
       if (target) {
-        if (target.calories > 0) { acc.cal.logged += 1; if (within(actual.calories, target.calories)) acc.cal.ok += 1; }
-        if (target.protein > 0) { acc.p.logged += 1; if (within(actual.protein, target.protein)) acc.p.ok += 1; }
-        if (target.carbs > 0) { acc.c.logged += 1; if (within(actual.carbs, target.carbs)) acc.c.ok += 1; }
-        if (target.fat > 0) { acc.f.logged += 1; if (within(actual.fat, target.fat)) acc.f.ok += 1; }
+        if (target.calories > 0) { acc.cal.sum += (actual.calories / target.calories) * 100; acc.cal.n += 1; }
+        if (target.protein > 0) { acc.p.sum += (actual.protein / target.protein) * 100; acc.p.n += 1; }
+        if (target.carbs > 0) { acc.c.sum += (actual.carbs / target.carbs) * 100; acc.c.n += 1; }
+        if (target.fat > 0) { acc.f.sum += (actual.fat / target.fat) * 100; acc.f.n += 1; }
       }
     }
 
-    const pct = (o) => (o.logged > 0 ? (o.ok / o.logged) * 100 : null);
+    const pct = (o) => (o.n > 0 ? o.sum / o.n : null);
     return {
       adherencePct: pct(acc.cal),
       proteinPct: pct(acc.p),
@@ -282,27 +292,29 @@ async function computeWeeklyAdherence(athleteId, token) {
   }
 }
 
-// Weekly adherence cells shown on each roster row: calories + P/C/F adherence
-// (% of LOGGED days within ±10% of target over the last 7 days) and days-logged.
+// Weekly adherence cells shown on each roster row: calories + P/C/F adherence.
+// Each % is the AVERAGE of that macro's daily (actual ÷ target) over the days
+// the athlete logged — so it reflects how close to target they run on average.
 //
-// IMPORTANT — days-logged governs the row. A "100%" built on a single logged
-// day is misleading (100% of 1 day looks identical to 100% of 7). So unless the
-// athlete has logged a meaningful chunk of the week, the percentages are dimmed
-// to grey and the days-logged figure (shown in red/amber) drives the signal.
-// Only when logging is solid do the percentages earn their colour bands, which
-// match the athlete-detail view exactly: ≥90% green, ≥75% amber, else red.
+// IMPORTANT — days-logged governs the row. An average built on a single logged
+// day is thin evidence. So unless the athlete has logged a meaningful chunk of
+// the week, the percentages are dimmed to grey and the days-logged figure
+// (shown in red/amber) drives the signal. Only when logging is solid do the
+// percentages earn their colour bands, which match the athlete-detail view:
+// 90–110% green, 75–125% amber, otherwise red — so BOTH under- and over-target
+// (e.g. 18% or 140%) read as red.
 function AdherenceCells({ a }) {
   const dl = a.daysLogged;
   // How trustworthy is the % given how much was logged this week?
   // trusted (≥5/7): show real colour bands. partial (3–4): show but tinted.
-  // weak (<3): dim the %s entirely so a high number can't read as "good".
+  // weak (<3): dim the %s entirely so a value can't read as "good" on thin data.
   const trust = dl == null ? "none" : dl >= 5 ? "full" : dl >= 3 ? "partial" : "weak";
 
   const bandColour = (p) => {
     if (p == null) return T.muted;
-    if (p >= 90) return T.coachGreen;   // matches detail view 90–110 green
-    if (p >= 75) return T.warn;         // matches detail view 75–125 amber
-    return T.danger;                    // outside
+    if (p >= 90 && p <= 110) return T.coachGreen; // on target
+    if (p >= 75 && p <= 125) return T.warn;       // close
+    return T.danger;                              // well under or well over
   };
   // When logging is too thin, the % is greyed regardless of its value.
   const pctColour = (p) => (trust === "full" ? bandColour(p) : trust === "partial" ? (p == null ? T.muted : `${bandColour(p)}cc`) : T.muted);

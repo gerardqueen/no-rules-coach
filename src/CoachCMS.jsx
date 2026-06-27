@@ -196,6 +196,92 @@ const labelStyle = {
   marginBottom: 6,
 };
 
+// Compute a single athlete's weekly adherence the SAME way the athlete-detail
+// "Weekly Adherence" view does — so the roster and the detail can never disagree.
+// Reads /macro-plans (targets per weekday) plus /daily-totals AND /food-logs
+// (food logs fill any day missing from daily-totals, exactly like the detail).
+// For each macro: a logged day counts as adhered if actual is within ±10% of
+// target (the 90–110% green band). % is over LOGGED days only.
+async function computeWeeklyAdherence(athleteId, token) {
+  try {
+    const plans = await apiFetch(`/macro-plans/${athleteId}`, token);
+    const byDay = {};
+    (Array.isArray(plans) ? plans : []).forEach((r) => {
+      byDay[r.day_of_week] = {
+        calories: Math.round(Number(r.calories || 0)),
+        protein: Math.round(Number(r.protein_g || 0)),
+        carbs: Math.round(Number(r.carbs_g || 0)),
+        fat: Math.round(Number(r.fat_g || 0)),
+      };
+    });
+
+    const today = new Date();
+    const start = new Date(today); start.setDate(today.getDate() - 6);
+    const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+    let totals = [], foodLogs = [];
+    try { totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+    try { foodLogs = await apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+
+    const byDate = {};
+    (Array.isArray(totals) ? totals : []).forEach((r) => {
+      byDate[r.date] = {
+        calories: Math.round(Number(r.calories || 0)),
+        protein: Math.round(Number(r.protein_g || 0)),
+        carbs: Math.round(Number(r.carbs_g || 0)),
+        fat: Math.round(Number(r.fat_g || 0)),
+      };
+    });
+    (Array.isArray(foodLogs) ? foodLogs : []).forEach((fl) => {
+      if (byDate[fl.date]) return;
+      const foods = fl.foods || [];
+      if (foods.length === 0) return;
+      byDate[fl.date] = {
+        calories: Math.round(foods.reduce((s, f) => s + Number(f.calories || 0), 0)),
+        protein: Math.round(foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0)),
+        carbs: Math.round(foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0)),
+        fat: Math.round(foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0)),
+      };
+    });
+
+    const DAYS_MF = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"];
+    const within = (actual, target) => target > 0 && Math.abs(actual - target) / target <= 0.10;
+    const acc = {
+      daysLogged: 0,
+      cal: { logged: 0, ok: 0 }, p: { logged: 0, ok: 0 }, c: { logged: 0, ok: 0 }, f: { logged: 0, ok: 0 },
+    };
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const dow = d.getDay();
+      const dayKey = DAYS_MF[dow === 0 ? 6 : dow - 1];
+      const dateStr = fmt(d);
+      const target = byDay[dayKey];
+      const actual = byDate[dateStr];
+      const isLogged = actual && actual.calories > 0;
+      if (!isLogged) continue;
+      acc.daysLogged += 1;
+      if (target) {
+        if (target.calories > 0) { acc.cal.logged += 1; if (within(actual.calories, target.calories)) acc.cal.ok += 1; }
+        if (target.protein > 0) { acc.p.logged += 1; if (within(actual.protein, target.protein)) acc.p.ok += 1; }
+        if (target.carbs > 0) { acc.c.logged += 1; if (within(actual.carbs, target.carbs)) acc.c.ok += 1; }
+        if (target.fat > 0) { acc.f.logged += 1; if (within(actual.fat, target.fat)) acc.f.ok += 1; }
+      }
+    }
+
+    const pct = (o) => (o.logged > 0 ? (o.ok / o.logged) * 100 : null);
+    return {
+      adherencePct: pct(acc.cal),
+      proteinPct: pct(acc.p),
+      carbsPct: pct(acc.c),
+      fatPct: pct(acc.f),
+      daysLogged: acc.daysLogged,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // Weekly adherence cells shown on each roster row: calories + P/C/F adherence
 // (% of LOGGED days within ±10% of target over the last 7 days) and days-logged.
 //
@@ -2496,21 +2582,13 @@ function AdminCoachOverview({ token, myId }) {
     try {
       const rows = await apiFetch(`/admin/coach/${coach.id}/athletes`, token);
       let list = Array.isArray(rows) ? rows : [];
-      // Merge weekly adherence (admins can request any coach's overview).
-      try {
-        const ov = await apiFetch(`/coach/overview?days=7&coachId=${coach.id}`, token);
-        const byId = {};
-        (ov?.athletes || []).forEach((o) => { byId[o.id] = o; });
-        list = list.map((a) => byId[a.id] ? {
-          ...a,
-          adherencePct: byId[a.id].adherencePct,
-          proteinPct: byId[a.id].proteinPct,
-          carbsPct: byId[a.id].carbsPct,
-          fatPct: byId[a.id].fatPct,
-          daysLogged: byId[a.id].daysLogged,
-        } : a);
-      } catch { /* adherence optional */ }
       setAthletes(list);
+      // Compute weekly adherence per athlete the same way the detail view does.
+      list.forEach(async (athlete) => {
+        const adh = await computeWeeklyAdherence(athlete.id, token);
+        if (!adh) return;
+        setAthletes((prev) => prev.map((a) => a.id === athlete.id ? { ...a, ...adh } : a));
+      });
     } catch { setAthletes([]); }
     setLoadingAthletes(false);
   };
@@ -3569,20 +3647,14 @@ export default function CoachCMS() {
         }));
         setAthletes(mapped);
 
-        // Fetch weekly adherence (last 7 days) and merge onto each athlete row.
-        try {
-          const ov = await apiFetch("/coach/overview?days=7", token);
-          const byId = {};
-          (ov?.athletes || []).forEach((o) => { byId[o.id] = o; });
-          setAthletes((prev) => prev.map((a) => byId[a.id] ? {
-            ...a,
-            adherencePct: byId[a.id].adherencePct,
-            proteinPct: byId[a.id].proteinPct,
-            carbsPct: byId[a.id].carbsPct,
-            fatPct: byId[a.id].fatPct,
-            daysLogged: byId[a.id].daysLogged,
-          } : a));
-        } catch { /* overview optional; roster still shows without it */ }
+        // Compute weekly adherence the same way the athlete-detail view does, so
+        // the roster and detail always agree. Done per-athlete (fine for typical
+        // roster sizes); for very large rosters this could be moved server-side.
+        mapped.forEach(async (athlete) => {
+          const adh = await computeWeeklyAdherence(athlete.id, token);
+          if (!adh) return;
+          setAthletes((prev) => prev.map((a) => a.id === athlete.id ? { ...a, ...adh } : a));
+        });
       } catch (e) {
         setRosterErr(e.message);
       } finally {

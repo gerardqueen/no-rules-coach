@@ -1407,7 +1407,7 @@ function AthleteVideoManager({ athleteId, token }) {
 function AthleteCheckInManager({ athleteId, token }) {
   const [checkins, setCheckins] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", title: "", notes: "", linkUrl: "" });
+  const [form, setForm] = useState({ date: "", time: "", title: "", notes: "", linkUrl: "" });
   const [saving, setSaving] = useState(false);
 
   const loadCheckins = async () => {
@@ -1434,12 +1434,13 @@ function AthleteCheckInManager({ athleteId, token }) {
         method: "POST",
         body: JSON.stringify({
           date: form.date,
+          time: form.time || null,
           title: form.title.trim() || "Check-in",
           notes: form.notes.trim(),
           linkUrl: form.linkUrl.trim() || null,
         }),
       });
-      setForm({ date: "", title: "", notes: "", linkUrl: "" });
+      setForm({ date: "", time: "", title: "", notes: "", linkUrl: "" });
       await loadCheckins();
     } catch (e) { alert(e.message || "Could not save check-in"); }
     setSaving(false);
@@ -1463,10 +1464,14 @@ function AthleteCheckInManager({ athleteId, token }) {
       {/* Add check-in form */}
       <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 16 }}>
         <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.accent, fontWeight: 600, marginBottom: 10, letterSpacing: 1, textTransform: "uppercase" }}>+ NEW CHECK-IN</div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8, marginBottom: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr", gap: 8, marginBottom: 8 }}>
           <div>
             <label style={labelStyle}>Date *</label>
             <input type="date" value={form.date} onChange={(e) => setForm(p => ({ ...p, date: e.target.value }))} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Time</label>
+            <input type="time" value={form.time} onChange={(e) => setForm(p => ({ ...p, time: e.target.value }))} style={inputStyle} />
           </div>
           <div>
             <label style={labelStyle}>Title</label>
@@ -1485,8 +1490,8 @@ function AthleteCheckInManager({ athleteId, token }) {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
           <div style={{ flex: 1 }}>
-            <label style={labelStyle}>Link (optional)</label>
-            <input value={form.linkUrl} onChange={(e) => setForm(p => ({ ...p, linkUrl: e.target.value }))} placeholder="https://…" style={inputStyle} />
+            <label style={labelStyle}>Google Meet / video link (optional)</label>
+            <input value={form.linkUrl} onChange={(e) => setForm(p => ({ ...p, linkUrl: e.target.value }))} placeholder="https://meet.google.com/…" style={inputStyle} />
           </div>
           <button onClick={addCheckin} disabled={saving || !form.date || !form.notes.trim()} style={{
             background: form.date && form.notes.trim() ? T.accent : T.border,

@@ -529,6 +529,185 @@ function CoachLogin({ onLoggedIn }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Add Athlete Modal (persists to backend via POST /athletes)
 ────────────────────────────────────────────────────────────────────────────── */
+/* ──────────────────────────────────────────────────────────────────────────
+   Batch CSV Upload Modal (POST /athletes/batch)
+   CSV columns: name,email[,sport] — header row optional.
+   ────────────────────────────────────────────────────────────────────────── */
+function BatchUploadModal({ token, onClose, onDone }) {
+  const [rows, setRows] = useState([]);
+  const [fileName, setFileName] = useState("");
+  const [sendEmails, setSendEmails] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [results, setResults] = useState(null);
+  const [emailEnabled, setEmailEnabled] = useState(true);
+
+  const parseCsv = (text) => {
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return [];
+    // Split respecting simple quoted fields
+    const split = (l) => {
+      const out = []; let cur = ""; let q = false;
+      for (const ch of l) {
+        if (ch === '"') q = !q;
+        else if (ch === "," && !q) { out.push(cur.trim()); cur = ""; }
+        else cur += ch;
+      }
+      out.push(cur.trim());
+      return out;
+    };
+    let start = 0;
+    const first = split(lines[0]).map((c) => c.toLowerCase());
+    let idx = { name: 0, email: 1, sport: 2 };
+    if (first.includes("name") || first.includes("email")) {
+      idx = {
+        name: first.indexOf("name") !== -1 ? first.indexOf("name") : 0,
+        email: first.indexOf("email") !== -1 ? first.indexOf("email") : 1,
+        sport: first.indexOf("sport"),
+      };
+      start = 1;
+    }
+    return lines.slice(start).map((l) => {
+      const c = split(l);
+      return {
+        name: c[idx.name] || "",
+        email: (c[idx.email] || "").toLowerCase(),
+        sport: idx.sport >= 0 ? c[idx.sport] || "" : "",
+        valid: !!(c[idx.name] && /^\S+@\S+\.\S+$/.test(c[idx.email] || "")),
+      };
+    });
+  };
+
+  const onFile = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setFileName(f.name);
+    const reader = new FileReader();
+    reader.onload = () => setRows(parseCsv(String(reader.result || "")));
+    reader.readAsText(f);
+  };
+
+  const upload = async () => {
+    const valid = rows.filter((r) => r.valid);
+    if (!valid.length) { alert("No valid rows to upload"); return; }
+    setUploading(true);
+    try {
+      const res = await apiFetch(`/athletes/batch`, token, {
+        method: "POST",
+        body: JSON.stringify({
+          athletes: valid.map(({ name, email, sport }) => ({ name, email, sport: sport || null })),
+          sendEmails,
+        }),
+      });
+      setResults(res.results || []);
+      setEmailEnabled(res.emailEnabled !== false);
+      if (onDone) onDone();
+    } catch (e) {
+      alert(e.message || "Upload failed");
+    }
+    setUploading(false);
+  };
+
+  const downloadResults = () => {
+    if (!results) return;
+    const lines = ["name,email,status,password,emailed"];
+    results.forEach((r) => lines.push(`${r.name},${r.email},${r.status},${r.password || ""},${r.emailed ? "yes" : "no"}`));
+    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "athlete-upload-results.csv";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const validCount = rows.filter((r) => r.valid).length;
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "#000000d0", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div style={{ width: "100%", maxWidth: 640, maxHeight: "85vh", overflowY: "auto", background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22 }}>
+        <div style={{ padding: "20px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>BATCH UPLOAD ATHLETES</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: T.muted, fontSize: 20, cursor: "pointer" }}>✕</button>
+        </div>
+        <div style={{ padding: 24 }}>
+          {!results && (
+            <>
+              <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginBottom: 14, lineHeight: 1.6 }}>
+                Upload a CSV with columns <b style={{ color: T.text }}>name, email, sport</b> (sport optional, header row optional).
+                A secure password is generated for each athlete.
+              </div>
+              <label style={{ display: "block", border: `1px dashed ${T.accent}`, borderRadius: 12, padding: 18, textAlign: "center", cursor: "pointer", marginBottom: 14, color: T.accent, fontFamily: "DM Sans", fontSize: 13 }}>
+                {fileName ? `📄 ${fileName}` : "📄 Choose CSV file…"}
+                <input type="file" accept=".csv,text/csv" onChange={onFile} style={{ display: "none" }} />
+              </label>
+
+              {rows.length > 0 && (
+                <>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, marginBottom: 8 }}>
+                    {validCount} valid / {rows.length} rows
+                  </div>
+                  <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 14 }}>
+                    {rows.map((r, i) => (
+                      <div key={i} style={{ display: "flex", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${T.border}`, fontFamily: "DM Sans", fontSize: 12, color: r.valid ? T.text : "#ef4444", alignItems: "center" }}>
+                        <span style={{ width: 16 }}>{r.valid ? "✓" : "✗"}</span>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name || "(no name)"}</span>
+                        <span style={{ flex: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11 }}>{r.email || "(no email)"}</span>
+                        <span style={{ width: 90, color: T.muted }}>{r.sport}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "DM Sans", fontSize: 13, color: T.text, marginBottom: 16, cursor: "pointer" }}>
+                    <input type="checkbox" checked={sendEmails} onChange={(e) => setSendEmails(e.target.checked)} />
+                    Email each athlete their login details
+                  </label>
+                  <button
+                    onClick={upload}
+                    disabled={uploading || !validCount}
+                    style={{ width: "100%", padding: 13, background: validCount ? T.accent : T.border, color: validCount ? T.bg : T.muted, border: "none", borderRadius: 12, fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, cursor: validCount ? "pointer" : "default", opacity: uploading ? 0.6 : 1 }}
+                  >
+                    {uploading ? "UPLOADING…" : `UPLOAD ${validCount} ATHLETES`}
+                  </button>
+                </>
+              )}
+            </>
+          )}
+
+          {results && (
+            <>
+              <div style={{ fontFamily: "DM Sans", fontSize: 13, color: T.text, marginBottom: 12 }}>
+                Created <b style={{ color: T.coachGreen }}>{results.filter((r) => r.status === "created").length}</b> of {results.length} —
+                {" "}{results.filter((r) => r.emailed).length} emailed
+                {!emailEnabled && <span style={{ color: "#f59e0b" }}> (email not configured on server — passwords below)</span>}
+              </div>
+              <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10, marginBottom: 14 }}>
+                {results.map((r, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, padding: "8px 12px", borderBottom: `1px solid ${T.border}`, fontFamily: "DM Sans", fontSize: 12, alignItems: "center", color: r.status === "created" ? T.text : "#ef4444" }}>
+                    <span style={{ width: 16 }}>{r.status === "created" ? "✓" : "✗"}</span>
+                    <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
+                    <span style={{ flex: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11 }}>{r.email}</span>
+                    <span style={{ width: 120, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11, color: T.accent }}>{r.password || r.error || r.status}</span>
+                    <span style={{ width: 44, color: r.emailed ? T.coachGreen : T.muted, fontSize: 11 }}>{r.emailed ? "sent" : ""}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={downloadResults} style={{ flex: 1, padding: 12, background: T.surface, color: T.text, border: `1px solid ${T.border}`, borderRadius: 12, fontFamily: "DM Sans", fontSize: 13, cursor: "pointer" }}>
+                  ⬇ Download results CSV
+                </button>
+                <button onClick={onClose} style={{ flex: 1, padding: 12, background: T.accent, color: T.bg, border: "none", borderRadius: 12, fontFamily: "Bebas Neue, system-ui", fontSize: 15, letterSpacing: 1.5, cursor: "pointer" }}>
+                  DONE
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AddAthleteModal({ onClose, onCreate, creating }) {
   const SPORTS = ["Triathlon", "Powerlifting", "CrossFit", "Swimming", "Running", "Other"];
 
@@ -2976,6 +3155,8 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [confirmResend, setConfirmResend] = useState(false);
   const [mfpUsername, setMfpUsername] = useState(athlete.mfpUsername || "");
   const [mfpEditing, setMfpEditing] = useState(false);
   const [mfpSaving, setMfpSaving] = useState(false);
@@ -3118,6 +3299,67 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
         </div>
 
         {/* Delete athlete button */}
+        {!confirmResend ? (
+          <button
+            onClick={() => setConfirmResend(true)}
+            style={{
+              background: "none",
+              border: `1px solid ${T.accent}44`,
+              borderRadius: 8,
+              padding: "6px 14px",
+              color: T.accent,
+              fontFamily: "DM Sans",
+              fontSize: 11,
+              cursor: "pointer",
+            }}
+            type="button"
+          >
+            🔑 Resend Login
+          </button>
+        ) : (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: T.accent, fontFamily: "DM Sans" }}>Resets their password — sure?</span>
+            <button
+              onClick={async () => {
+                setResending(true);
+                try {
+                  const res = await apiFetch(`/athletes/${athlete.id}/resend-credentials`, token, { method: "POST" });
+                  if (res.emailed) {
+                    alert(`New login details emailed to ${athlete.email}.`);
+                  } else {
+                    alert(`Email not sent (${res.emailEnabled ? "send failed" : "email not configured"}).\nNew password: ${res.password}\nPass it on to the athlete manually.`);
+                  }
+                } catch (e) {
+                  alert(e.message || "Could not resend login details");
+                }
+                setResending(false);
+                setConfirmResend(false);
+              }}
+              disabled={resending}
+              style={{
+                background: T.accent,
+                border: "none",
+                borderRadius: 6,
+                padding: "5px 12px",
+                color: T.bg,
+                fontFamily: "Bebas Neue, system-ui",
+                fontSize: 12,
+                letterSpacing: 1,
+                cursor: resending ? "default" : "pointer",
+              }}
+              type="button"
+            >
+              {resending ? "SENDING…" : "CONFIRM"}
+            </button>
+            <button
+              onClick={() => setConfirmResend(false)}
+              style={{ background: "none", border: "none", color: T.muted, fontSize: 11, cursor: "pointer", fontFamily: "DM Sans" }}
+              type="button"
+            >
+              cancel
+            </button>
+          </div>
+        )}
         {!confirmDelete ? (
           <button
             onClick={() => setConfirmDelete(true)}
@@ -3611,6 +3853,8 @@ export default function CoachCMS() {
   const [selected, setSelected] = useState(null);
 
   const [showAdd, setShowAdd] = useState(false);
+  const [showBatch, setShowBatch] = useState(false);
+  const [rosterRefresh, setRosterRefresh] = useState(0);
   const [creating, setCreating] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showBroadcastContent, setShowBroadcastContent] = useState(false);
@@ -3678,7 +3922,7 @@ export default function CoachCMS() {
         setLoadingRoster(false);
       }
     })();
-  }, [token, me]);
+  }, [token, me, rosterRefresh]);
 
   const onLoggedIn = (userWithToken) => {
     setMe(userWithToken);
@@ -3897,6 +4141,23 @@ export default function CoachCMS() {
                   📤 SEND CONTENT
                 </button>
               <button
+                onClick={() => setShowBatch(true)}
+                style={{
+                  background: T.surface,
+                  color: T.accent,
+                  border: `1px dashed ${T.accent}`,
+                  borderRadius: 10,
+                  padding: "10px 18px",
+                  fontFamily: "Bebas Neue, system-ui",
+                  fontSize: 14,
+                  letterSpacing: 1.5,
+                  cursor: "pointer",
+                }}
+                type="button"
+              >
+                📄 CSV UPLOAD
+              </button>
+              <button
                 onClick={() => setShowAdd(true)}
                 style={{
                   background: T.accent,
@@ -4026,6 +4287,14 @@ export default function CoachCMS() {
           onClose={() => setShowAdd(false)}
           onCreate={createAthlete}
           creating={creating}
+        />
+      )}
+
+      {showBatch && (
+        <BatchUploadModal
+          token={token}
+          onClose={() => setShowBatch(false)}
+          onDone={() => setRosterRefresh((n) => n + 1)}
         />
       )}
 

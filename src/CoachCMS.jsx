@@ -1069,7 +1069,7 @@ function TimeSeriesChart({ data, color, yLabel, yUnit, width = 560, height = 200
       {/* X-axis labels */}
       {xLabels.map((d) => {
         const idx = data.indexOf(d);
-        const short = d.date.slice(5); // MM-DD
+        const short = String(d.date).slice(5).split("-").reverse().join("/"); // DD/MM
         return (
           <text key={d.date} x={xScale(idx)} y={height - 6} textAnchor="middle" fill={T.muted} fontSize={8} fontFamily="JetBrains Mono, ui-monospace">
             {short}
@@ -1756,7 +1756,7 @@ function AthleteCheckInManager({ athleteId, token }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ background: `${T.coachGreen}22`, border: `1px solid ${T.coachGreen}44`, borderRadius: 6, padding: "3px 10px", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.coachGreen, fontWeight: 600 }}>
-                    {c.date}
+                    {String(c.date).split("-").reverse().join("/")}
                   </span>
                   <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1, color: T.text }}>{c.title}</span>
                 </div>
@@ -2242,7 +2242,7 @@ function WeeklyAdherenceView({ athleteId, token }) {
                   fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
                   color: isToday ? T.accent : T.text, minWidth: 36,
                 }}>{dayKey}</span>
-                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{dateStr.slice(5)}</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{String(dateStr).slice(5).split("-").reverse().join("/")}</span>
                 {isToday && <span style={{ fontSize: 9, color: T.accent, fontFamily: "DM Sans", fontWeight: 700 }}>TODAY</span>}
                 {!hasData && <span style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans", fontStyle: "italic" }}>No food logged</span>}
               </div>

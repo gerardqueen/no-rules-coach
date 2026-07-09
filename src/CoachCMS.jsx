@@ -1232,6 +1232,8 @@ function AthleteWeightViewer({ athleteId, token }) {
 function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
   const [foodLogs, setFoodLogs] = useState([]);
   const [dailyTotals, setDailyTotals] = useState([]);
+  const [plans, setPlans] = useState([]);           // reserved
+  const [dateTargets, setDateTargets] = useState([]); // merged per-date targets (override ?? weekday plan)
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState(7);
   const [expandedDay, setExpandedDay] = useState(null);
@@ -1242,12 +1244,16 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
       const today = new Date();
       const start = new Date(today); start.setDate(today.getDate() - range);
       const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-      // Fetch both independently so one failing doesn't break the other
-      let logs = [], totals = [];
+      // Fetch independently so one failing doesn't break the others.
+      // /macro-targets returns the MERGED per-date target (per-date override if
+      // set, otherwise the coach's per-weekday plan) — the single source of truth.
+      let logs = [], totals = [], dts = [];
       try { logs = await apiFetch(`/food-logs/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
       try { totals = await apiFetch(`/daily-totals/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
+      try { dts = await apiFetch(`/macro-targets/${athleteId}?start=${fmt(start)}&end=${fmt(today)}`, token); } catch {}
       setFoodLogs(Array.isArray(logs) ? logs : []);
       setDailyTotals(Array.isArray(totals) ? totals : []);
+      setDateTargets(Array.isArray(dts) ? dts : []);
     } catch { setFoodLogs([]); setDailyTotals([]); }
     setLoading(false);
   };
@@ -1274,6 +1280,14 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
     ...Object.keys(totalsMap),
   ]);
 
+  // Merged per-date targets keyed by date
+  const targetMap = {};
+  dateTargets.forEach((t) => { targetMap[t.date] = t; });
+
+  // UK date helpers
+  const ukShort = (iso) => { const [y, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+  const ukLong = (iso) => { const [y, m, d] = String(iso).split("-"); return `${d}/${m}/${y}`; };
+
   // Build unified day data sorted by date
   const dayData = [...allDates].sort().map(date => {
     const foods = foodsByDate[date] || [];
@@ -1283,11 +1297,14 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
     const p = dt ? Number(dt.protein_g || 0) : foods.reduce((s, f) => s + Number(f.protein_g || f.protein || 0), 0);
     const c = dt ? Number(dt.carbs_g || 0) : foods.reduce((s, f) => s + Number(f.carbs_g || f.carbs || 0), 0);
     const f = dt ? Number(dt.fat_g || 0) : foods.reduce((s, f) => s + Number(f.fat_g || f.fat || 0), 0);
-    return { date, calories: Math.round(cal), protein: Math.round(p), carbs: Math.round(c), fat: Math.round(f), foods };
+    // Per-day target: coach's per-date override ?? weekday plan ?? header goals fallback
+    const t = targetMap[date];
+    const target = t ? Number(t.calories || 0) : (macroTarget?.calories || 2000);
+    return { date, calories: Math.round(cal), protein: Math.round(p), carbs: Math.round(c), fat: Math.round(f), target, foods };
   });
 
-  const calTarget = macroTarget?.calories || 2000;
-  const barMax = Math.max(calTarget, ...dayData.map(d => d.calories)) * 1.1 || calTarget * 1.1;
+  const maxTarget = Math.max(...dayData.map(d => d.target), macroTarget?.calories || 2000);
+  const barMax = Math.max(maxTarget, ...dayData.map(d => d.calories)) * 1.1 || maxTarget * 1.1;
 
   const rangeOptions = [{ v: 7, l: "7D" }, { v: 14, l: "14D" }, { v: 30, l: "30D" }];
 
@@ -1323,8 +1340,8 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
             <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 100 }}>
               {dayData.map((d) => {
                 const pct = (d.calories / barMax) * 100;
-                const over = d.calories > calTarget;
-                const targetPct = (calTarget / barMax) * 100;
+                const over = d.calories > d.target;
+                const targetPct = (d.target / barMax) * 100;
                 const isExpanded = expandedDay === d.date;
                 return (
                   <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", cursor: "pointer" }}
@@ -1342,7 +1359,7 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
                       }} />
                     </div>
                     <div style={{ fontSize: 7, fontFamily: "JetBrains Mono, ui-monospace", color: isExpanded ? T.accent : T.muted, marginTop: 2 }}>
-                      {d.date.slice(5)}
+                      {ukShort(d.date)}
                     </div>
                   </div>
                 );
@@ -1351,7 +1368,7 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
             <div style={{ display: "flex", gap: 14, marginTop: 6 }}>
               <span style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans" }}>
                 <span style={{ display: "inline-block", width: 10, height: 2, background: T.coachGreen, marginRight: 4, verticalAlign: "middle" }} />
-                Target: {calTarget} cal
+                Target line per day — from your macro plan{dateTargets.some(t => t.source === "override") ? " (incl. day overrides)" : ""}
               </span>
             </div>
           </div>
@@ -1359,24 +1376,69 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
           {/* Expanded food items for selected day */}
           {expandedDay && (
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 12, animation: "fadeUp .15s ease" }}>
-              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, color: T.accent, marginBottom: 8 }}>{expandedDay}</div>
+              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, color: T.accent, marginBottom: 8 }}>{ukLong(expandedDay)}</div>
               {(() => {
                 const dd = dayData.find(d => d.date === expandedDay);
                 const foods = dd?.foods || [];
                 if (foods.length === 0) return <div style={{ fontSize: 11, color: T.muted }}>No individual food items recorded.</div>;
+
+                // Group foods by meal so light meals (e.g. pre-training) stand out.
+                const MEAL_ORDER = ["Breakfast", "Lunch", "Dinner", "Snacks"];
+                const norm = (m) => {
+                  const s = String(m || "").toLowerCase();
+                  if (s.startsWith("break")) return "Breakfast";
+                  if (s.startsWith("lunch")) return "Lunch";
+                  if (s.startsWith("dinner") || s.startsWith("tea")) return "Dinner";
+                  if (s.startsWith("snack")) return "Snacks";
+                  return "Other";
+                };
+                const groups = {};
+                foods.forEach((f) => {
+                  const g = norm(f.meal);
+                  (groups[g] = groups[g] || []).push(f);
+                });
+                const mealNames = [...MEAL_ORDER.filter((m) => groups[m]), ...(groups["Other"] ? ["Other"] : [])];
+                const mealTotals = (items) => items.reduce((a, f) => ({
+                  cal: a.cal + Number(f.calories || 0),
+                  p: a.p + Number(f.protein_g || f.protein || 0),
+                  c: a.c + Number(f.carbs_g || f.carbs || 0),
+                  f: a.f + Number(f.fat_g || f.fat || 0),
+                }), { cal: 0, p: 0, c: 0, f: 0 });
+
                 return (
                   <>
-                    <div style={{ fontSize: 10, color: T.muted, marginBottom: 8, fontFamily: "JetBrains Mono, ui-monospace" }}>
-                      {dd.calories} cal · P: {dd.protein}g · C: {dd.carbs}g · F: {dd.fat}g
+                    {/* Day totals vs that day's target */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: T.card, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 }}>
+                      <span style={{ fontSize: 10, color: T.text, fontFamily: "JetBrains Mono, ui-monospace" }}>
+                        DAY: {dd.calories} cal · P {dd.protein}g · C {dd.carbs}g · F {dd.fat}g
+                      </span>
+                      <span style={{ fontSize: 10, fontFamily: "JetBrains Mono, ui-monospace", color: dd.calories > dd.target ? T.danger : T.coachGreen }}>
+                        target {dd.target}
+                      </span>
                     </div>
-                    {foods.map((f, j) => (
-                      <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", borderBottom: `1px solid ${T.border}20`, fontSize: 11 }}>
-                        <span style={{ color: T.text }}>{f.name} {f.meal ? <span style={{ color: T.muted, fontSize: 9 }}>({f.meal})</span> : ""}</span>
-                        <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
-                          {Math.round(f.calories || 0)} · {Math.round(Number(f.protein_g || f.protein || 0))}p · {Math.round(Number(f.carbs_g || f.carbs || 0))}c · {Math.round(Number(f.fat_g || f.fat || 0))}f
-                        </span>
-                      </div>
-                    ))}
+
+                    {mealNames.map((mealName) => {
+                      const items = groups[mealName];
+                      const mt = mealTotals(items);
+                      return (
+                        <div key={mealName} style={{ marginBottom: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                            <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5, color: T.text }}>{mealName.toUpperCase()}</span>
+                            <span style={{ fontSize: 9, color: T.accent, fontFamily: "JetBrains Mono, ui-monospace" }}>
+                              {Math.round(mt.cal)} cal · {Math.round(mt.p)}p · {Math.round(mt.c)}c · {Math.round(mt.f)}f
+                            </span>
+                          </div>
+                          {items.map((f, j) => (
+                            <div key={j} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0 3px 10px", borderBottom: `1px solid ${T.border}20`, fontSize: 11 }}>
+                              <span style={{ color: T.text }}>{f.name}</span>
+                              <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
+                                {Math.round(f.calories || 0)} · {Math.round(Number(f.protein_g || f.protein || 0))}p · {Math.round(Number(f.carbs_g || f.carbs || 0))}c · {Math.round(Number(f.fat_g || f.fat || 0))}f
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
                   </>
                 );
               })()}
@@ -1722,6 +1784,157 @@ function AthleteCheckInManager({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Wellbeing Manager — coach sets habits, sees athlete RAG ratings + weight/mood
+────────────────────────────────────────────────────────────────────────────── */
+function WellbeingManager({ athleteId, token }) {
+  const [habits, setHabits] = useState([]);
+  const [ratings, setRatings] = useState([]);
+  const [weights, setWeights] = useState([]);
+  const [moods, setMoods] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newHabit, setNewHabit] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const last7 = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return fmt(d); });
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+
+  const load = async () => {
+    try {
+      const start = last7[0], end = last7[6];
+      let h = [], r = [], w = [], m = [];
+      try { h = await apiFetch(`/habits/${athleteId}`, token); } catch {}
+      try { r = await apiFetch(`/habit-ratings/${athleteId}?start=${start}&end=${end}`, token); } catch {}
+      try { w = await apiFetch(`/weights/${athleteId}`, token); } catch {}
+      try { m = await apiFetch(`/moods/${athleteId}`, token); } catch {}
+      setHabits(Array.isArray(h) ? h : []);
+      setRatings(Array.isArray(r) ? r : []);
+      setWeights(Array.isArray(w) ? w.sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7) : []);
+      setMoods(Array.isArray(m) ? m.sort((a,b) => b.date.localeCompare(a.date)).slice(0, 7) : []);
+    } catch {}
+    setLoading(false);
+  };
+
+  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } }, [athleteId, token]);
+
+  const addHabit = async () => {
+    const title = newHabit.trim();
+    if (!title) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/habits/${athleteId}`, token, { method: "POST", body: JSON.stringify({ title }) });
+      setNewHabit("");
+      await load();
+    } catch (e) { alert(e.message || "Could not add habit"); }
+    setSaving(false);
+  };
+
+  const deleteHabit = async (id) => {
+    try {
+      await apiFetch(`/habits/${athleteId}/${id}`, token, { method: "DELETE" });
+      await load();
+    } catch (e) { alert(e.message); }
+  };
+
+  const ratingMap = {};
+  ratings.forEach((r) => { ratingMap[`${r.habit_id}|${r.date}`] = r.rating; });
+  const RAG_COLOR = { G: T.coachGreen, A: "#f59e0b", R: T.danger };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* Habits + RAG grid */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 4 }}>HABITS</div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+          Set habits for this athlete — they rate each one Red / Amber / Green daily.
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <input
+            value={newHabit}
+            onChange={(e) => setNewHabit(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addHabit(); }}
+            placeholder="e.g. 8k steps · 2L water · In bed by 10:30"
+            style={{ ...inputStyle, flex: 1 }}
+          />
+          <button onClick={addHabit} disabled={saving || !newHabit.trim()} style={{
+            background: newHabit.trim() ? T.accent : T.border,
+            color: newHabit.trim() ? T.bg : T.muted,
+            border: "none", borderRadius: 10, padding: "10px 18px",
+            fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+            cursor: newHabit.trim() && !saving ? "pointer" : "default",
+          }} type="button">{saving ? "…" : "ADD"}</button>
+        </div>
+
+        {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : habits.length === 0 ? (
+          <div style={{ color: T.muted, fontSize: 12 }}>No habits set yet. Add the first one above.</div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            {/* Header: dates */}
+            <div style={{ display: "grid", gridTemplateColumns: `minmax(140px, 1.6fr) repeat(7, 34px) 28px`, gap: 4, alignItems: "center", marginBottom: 6 }}>
+              <span />
+              {last7.map((d) => (
+                <span key={d} style={{ fontSize: 8, color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", textAlign: "center" }}>{ukShort(d)}</span>
+              ))}
+              <span />
+            </div>
+            {habits.map((h) => (
+              <div key={h.id} style={{ display: "grid", gridTemplateColumns: `minmax(140px, 1.6fr) repeat(7, 34px) 28px`, gap: 4, alignItems: "center", padding: "5px 0", borderBottom: `1px solid ${T.border}20` }}>
+                <span style={{ fontSize: 12, color: T.text, fontFamily: "DM Sans" }}>{h.title}</span>
+                {last7.map((d) => {
+                  const rag = ratingMap[`${h.id}|${d}`];
+                  return (
+                    <span key={d} style={{
+                      width: 22, height: 22, borderRadius: 6, margin: "0 auto",
+                      background: rag ? `${RAG_COLOR[rag]}cc` : T.surface,
+                      border: `1px solid ${rag ? RAG_COLOR[rag] : T.border}`,
+                    }} title={rag || "not rated"} />
+                  );
+                })}
+                <button onClick={() => deleteHabit(h.id)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 13 }} title="Remove habit" type="button">✕</button>
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
+              {[["G", "On track"], ["A", "Partly"], ["R", "Missed"]].map(([k, l]) => (
+                <span key={k} style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans" }}>
+                  <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: RAG_COLOR[k], marginRight: 4, verticalAlign: "middle" }} />{l}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Weight + Mood side by side */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text, marginBottom: 10 }}>WEIGHT</div>
+          {weights.length === 0 ? <div style={{ color: T.muted, fontSize: 12 }}>No weight logged yet.</div> : (
+            weights.map((w) => (
+              <div key={w.date} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: `1px solid ${T.border}20` }}>
+                <span style={{ fontSize: 11, color: T.muted, fontFamily: "JetBrains Mono, ui-monospace" }}>{ukShort(w.date)}</span>
+                <span style={{ fontSize: 12, color: T.text, fontFamily: "JetBrains Mono, ui-monospace" }}>{w.kg} kg</span>
+              </div>
+            ))
+          )}
+        </div>
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text, marginBottom: 10 }}>MOOD</div>
+          {moods.length === 0 ? <div style={{ color: T.muted, fontSize: 12 }}>No mood logged yet.</div> : (
+            moods.map((m) => (
+              <div key={m.date} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: `1px solid ${T.border}20` }}>
+                <span style={{ fontSize: 11, color: T.muted, fontFamily: "JetBrains Mono, ui-monospace" }}>{ukShort(m.date)}</span>
+                <span style={{ fontSize: 12, color: T.text }}>{m.emoji} <span style={{ color: T.muted, fontSize: 10 }}>{m.label}</span></span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Athlete Calendar Manager — view + add events for athlete
 ────────────────────────────────────────────────────────────────────────────── */
 function AthleteCalendarManager({ athleteId, token }) {
@@ -1824,7 +2037,13 @@ function AthleteCalendarManager({ athleteId, token }) {
           </div>
           <div>
             <label style={labelStyle}>Notes</label>
-            <input value={form.notes} onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Optional notes" style={inputStyle} />
+            <textarea
+              value={form.notes}
+              onChange={(e) => setForm(p => ({ ...p, notes: e.target.value }))}
+              placeholder="Optional notes — new lines are kept"
+              rows={3}
+              style={{ ...inputStyle, resize: "vertical", minHeight: 64, fontFamily: "DM Sans" }}
+            />
           </div>
           <button onClick={addEvent} disabled={saving || !form.date || !form.title.trim()} style={{
             background: form.date && form.title.trim() ? T.accent : T.border,
@@ -1844,11 +2063,11 @@ function AthleteCalendarManager({ athleteId, token }) {
             const timeStr = formatEventTime(ev);
             return (
               <div key={ev.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: `1px solid ${T.border}20` }}>
-                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{ev.date}</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>{String(ev.date).split("-").reverse().join("/")}</span>
                 {timeStr && <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.coachGreen, whiteSpace: "nowrap" }}>{timeStr}</span>}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>{ev.title}</div>
-                  {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{ev.notes}</div>}
+                  {ev.notes && <div style={{ fontSize: 11, color: T.muted, marginTop: 1, whiteSpace: "pre-wrap" }}>{ev.notes}</div>}
                 </div>
                 <button onClick={() => deleteEvent(ev.id)} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6, padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer" }} type="button">✕</button>
               </div>
@@ -3261,6 +3480,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "checkins", label: "CHECK-INS" },
     { id: "videos", label: "VIDEOS" },
     { id: "calendar", label: "CALENDAR" },
+    { id: "wellbeing", label: "WELLBEING" },
   ];
 
   return (
@@ -3694,6 +3914,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "calendar" && (
         <AthleteCalendarManager athleteId={athlete.id} token={token} />
+      )}
+
+      {tab === "wellbeing" && (
+        <WellbeingManager athleteId={athlete.id} token={token} />
       )}
     </div>
   );

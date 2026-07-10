@@ -1784,6 +1784,368 @@ function AthleteCheckInManager({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Meal Planner — coach plans meals per date (month ahead) with batch copy.
+   Sources: athlete's logged history, custom foods DB, OpenFoodFacts.
+────────────────────────────────────────────────────────────────────────────── */
+const PLAN_SLOTS = ["Breakfast", "Lunch", "Dinner", "Snack"];
+const emptyPlanDay = () => ({ Breakfast: [], Lunch: [], Dinner: [], Snack: [] });
+
+function MealPlannerTab({ athleteId, token }) {
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+  const ukLong = (iso) => String(iso).split("-").reverse().join("/");
+  const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return fmt(d); };
+  const todayStr = fmt(new Date());
+
+  // 31-day window from today
+  const dates = [...Array(31)].map((_, i) => addDays(todayStr, i));
+
+  const [planned, setPlanned] = useState({});      // date -> meals
+  const [selDate, setSelDate] = useState(todayStr);
+  const [dayMeals, setDayMeals] = useState(emptyPlanDay());
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  // Picker state
+  const [pickerSlot, setPickerSlot] = useState(null); // which meal slot the picker is open for
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [grams, setGrams] = useState("100");
+  const [selFood, setSelFood] = useState(null);     // per-100g food selected from search
+  const [recentFoods, setRecentFoods] = useState([]); // athlete's logged foods (fixed portions)
+  const [historyDays, setHistoryDays] = useState([]); // athlete's logged days for import
+  const [showImport, setShowImport] = useState(false);
+  const [copyMsg, setCopyMsg] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      let rows = [], logs = [];
+      try { rows = await apiFetch(`/planned-meals/${athleteId}?start=${dates[0]}&end=${dates[30]}`, token); } catch {}
+      const histStart = addDays(todayStr, -30);
+      try { logs = await apiFetch(`/food-logs/${athleteId}?start=${histStart}&end=${todayStr}`, token); } catch {}
+      const map = {};
+      (Array.isArray(rows) ? rows : []).forEach((r) => { map[r.date] = r.meals || {}; });
+      setPlanned(map);
+      // Recent foods: dedupe athlete's logged items by name (fixed portions)
+      const seen = new Set(); const rec = [];
+      (Array.isArray(logs) ? logs : []).sort((a,b) => b.date.localeCompare(a.date)).forEach((dl) => {
+        (dl.foods || []).forEach((f) => {
+          const key = String(f.name || "").toLowerCase();
+          if (!key || seen.has(key)) return;
+          seen.add(key);
+          rec.push({ name: f.name, grams: Number(f.grams || 0) || null, calories: Number(f.calories || 0), protein_g: Number(f.protein_g ?? f.protein ?? 0), carbs_g: Number(f.carbs_g ?? f.carbs ?? 0), fat_g: Number(f.fat_g ?? f.fat ?? 0) });
+        });
+      });
+      setRecentFoods(rec.slice(0, 30));
+      setHistoryDays((Array.isArray(logs) ? logs : []).filter((dl) => (dl.foods || []).length > 0).map((dl) => dl.date).sort().reverse());
+    } catch {}
+    setLoading(false);
+  };
+  useEffect(() => { if (athleteId && token) load(); }, [athleteId, token]);
+
+  // Sync editor when the selected date or loaded plans change
+  useEffect(() => {
+    const m = planned[selDate];
+    setDayMeals(m ? { ...emptyPlanDay(), ...m } : emptyPlanDay());
+    setDirty(false);
+    setPickerSlot(null);
+  }, [selDate, planned]);
+
+  // Debounced food search (custom foods DB + OpenFoodFacts)
+  useEffect(() => {
+    const term = q.trim();
+    if (term.length < 2) { setResults([]); setSearching(false); return; }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        let custom = [], off = [];
+        try { const r = await apiFetch(`/foods/search?q=${encodeURIComponent(term)}`, token); custom = Array.isArray(r) ? r : (r?.foods || []); } catch {}
+        try { const r = await apiFetch(`/off/search?q=${encodeURIComponent(term)}`, token); off = r?.products || []; } catch {}
+        const mapped = [
+          ...custom.map((f) => ({ name: f.name, per100: { calories: Number(f.calories || 0), protein_g: Number(f.protein_g || 0), carbs_g: Number(f.carbs_g || 0), fat_g: Number(f.fat_g || 0) }, src: "DB" })),
+          ...off.map((p) => ({ name: p.brand ? `${p.name} (${p.brand})` : p.name, per100: { calories: Number(p.calories || 0), protein_g: Number(p.protein || 0), carbs_g: Number(p.carbs || 0), fat_g: Number(p.fat || 0) }, src: "OFF" })),
+        ].filter((x) => x.name);
+        setResults(mapped.slice(0, 20));
+      } catch {}
+      setSearching(false);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [q, token]);
+
+  const dayTotals = PLAN_SLOTS.reduce((a, s) => {
+    (dayMeals[s] || []).forEach((i) => { a.cal += i.calories; a.p += i.protein_g; a.c += i.carbs_g; a.f += i.fat_g; });
+    return a;
+  }, { cal: 0, p: 0, c: 0, f: 0 });
+
+  const addItem = (slot, item) => {
+    setDayMeals((prev) => ({ ...prev, [slot]: [...(prev[slot] || []), item] }));
+    setDirty(true);
+  };
+  const removeItem = (slot, idx) => {
+    setDayMeals((prev) => ({ ...prev, [slot]: prev[slot].filter((_, i) => i !== idx) }));
+    setDirty(true);
+  };
+
+  const addSearchFood = () => {
+    if (!selFood || !pickerSlot) return;
+    const g = Math.max(1, Number(grams) || 100);
+    const r = g / 100;
+    addItem(pickerSlot, {
+      name: `${selFood.name} (${g}g)`,
+      grams: g,
+      calories: Math.round(selFood.per100.calories * r),
+      protein_g: Math.round(selFood.per100.protein_g * r * 10) / 10,
+      carbs_g: Math.round(selFood.per100.carbs_g * r * 10) / 10,
+      fat_g: Math.round(selFood.per100.fat_g * r * 10) / 10,
+    });
+    setSelFood(null); setQ(""); setResults([]); setGrams("100");
+  };
+
+  const saveDay = async () => {
+    setSaving(true);
+    try {
+      await apiFetch(`/planned-meals/${athleteId}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ date: selDate, meals: dayMeals }),
+      });
+      setPlanned((prev) => ({ ...prev, [selDate]: dayMeals }));
+      setDirty(false);
+    } catch (e) { alert(e.message || "Could not save"); }
+    setSaving(false);
+  };
+
+  const clearDay = async () => {
+    if (!window.confirm(`Clear the planned meals for ${ukLong(selDate)}?`)) return;
+    try {
+      await apiFetch(`/planned-meals/${athleteId}/${selDate}`, token, { method: "DELETE" });
+      setPlanned((prev) => { const n = { ...prev }; delete n[selDate]; return n; });
+    } catch (e) { alert(e.message); }
+  };
+
+  const importLoggedDay = async (fromDate) => {
+    try {
+      const logs = await apiFetch(`/food-logs/${athleteId}?start=${fromDate}&end=${fromDate}`, token);
+      const dl = (Array.isArray(logs) ? logs : [])[0];
+      if (!dl || !(dl.foods || []).length) { alert("Nothing logged that day."); return; }
+      const next = emptyPlanDay();
+      dl.foods.forEach((f) => {
+        const slot = PLAN_SLOTS.includes(f.meal) ? f.meal : (String(f.meal || "").toLowerCase().startsWith("snack") ? "Snack" : "Snack");
+        next[slot].push({ name: f.name, grams: Number(f.grams || 0) || null, calories: Number(f.calories || 0), protein_g: Number(f.protein_g ?? f.protein ?? 0), carbs_g: Number(f.carbs_g ?? f.carbs ?? 0), fat_g: Number(f.fat_g ?? f.fat ?? 0) });
+      });
+      setDayMeals(next);
+      setDirty(true);
+      setShowImport(false);
+    } catch (e) { alert(e.message); }
+  };
+
+  const doCopy = async (toDates, label) => {
+    if (dirty) { alert("Save this day first, then copy it."); return; }
+    if (!planned[selDate]) { alert("Nothing saved on this day to copy yet — save it first."); return; }
+    try {
+      const r = await apiFetch(`/planned-meals/${athleteId}/copy`, token, {
+        method: "POST",
+        body: JSON.stringify({ fromDate: selDate, toDates }),
+      });
+      setCopyMsg(`Copied to ${r.copied} day(s) — ${label}`);
+      setTimeout(() => setCopyMsg(""), 3000);
+      await load();
+    } catch (e) { alert(e.message || "Copy failed"); }
+  };
+
+  const copyNextNDays = (n) => doCopy([...Array(n)].map((_, i) => addDays(selDate, i + 1)), `next ${n} days`);
+  const copyWeekForward = (weeks) => {
+    // Copy this date's WHOLE WEEK (each saved day of the week containing selDate)
+    // onto the following N weeks, weekday-for-weekday.
+    const d = new Date(selDate + "T00:00:00");
+    const daysSinceMon = (d.getDay() + 6) % 7;
+    const monday = addDays(selDate, -daysSinceMon);
+    (async () => {
+      let copiedTotal = 0;
+      for (let i = 0; i < 7; i++) {
+        const src = addDays(monday, i);
+        if (!planned[src]) continue;
+        const targets = [...Array(weeks)].map((_, w) => addDays(src, 7 * (w + 1)));
+        try {
+          const r = await apiFetch(`/planned-meals/${athleteId}/copy`, token, {
+            method: "POST",
+            body: JSON.stringify({ fromDate: src, toDates: targets }),
+          });
+          copiedTotal += r.copied || 0;
+        } catch {}
+      }
+      setCopyMsg(`Week copied forward ${weeks} week(s) — ${copiedTotal} day(s) written`);
+      setTimeout(() => setCopyMsg(""), 3500);
+      await load();
+    })();
+  };
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>MEAL PLANNER</div>
+        {copyMsg && <span style={{ fontSize: 11, color: T.coachGreen, fontFamily: "DM Sans" }}>{copyMsg}</span>}
+      </div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        Plan meals up to a month ahead. Build a day, save it, then copy it across days or weeks.
+      </div>
+
+      {/* Date strip */}
+      <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, marginBottom: 14 }}>
+        {dates.map((d) => {
+          const has = !!planned[d];
+          const sel = d === selDate;
+          return (
+            <button key={d} onClick={() => { if (dirty && !window.confirm("Discard unsaved changes on this day?")) return; setSelDate(d); }} style={{
+              minWidth: 52, padding: "7px 4px", borderRadius: 9,
+              border: `1px solid ${sel ? T.accent : has ? T.coachGreen + "66" : T.border}`,
+              background: sel ? `${T.accent}22` : "none",
+              color: sel ? T.accent : T.text, cursor: "pointer",
+            }} type="button">
+              <div style={{ fontSize: 8, fontFamily: "DM Sans", color: T.muted }}>
+                {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short" }).toUpperCase()}
+              </div>
+              <div style={{ fontSize: 11, fontFamily: "JetBrains Mono, ui-monospace" }}>{ukShort(d)}</div>
+              {has && <div style={{ width: 5, height: 5, borderRadius: "50%", background: T.coachGreen, margin: "3px auto 0" }} />}
+            </button>
+          );
+        })}
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : (
+        <>
+          {/* Day header + totals + actions */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+            <div>
+              <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5, color: T.accent }}>{ukLong(selDate)}</span>
+              <span style={{ fontSize: 10, color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", marginLeft: 10 }}>
+                {Math.round(dayTotals.cal)} cal · {Math.round(dayTotals.p)}p · {Math.round(dayTotals.c)}c · {Math.round(dayTotals.f)}f
+              </span>
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button onClick={() => setShowImport(!showImport)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 12px", color: T.text, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">
+                📋 Import a logged day
+              </button>
+              <button onClick={saveDay} disabled={saving || !dirty} style={{
+                background: dirty ? T.accent : T.border, color: dirty ? T.bg : T.muted,
+                border: "none", borderRadius: 8, padding: "6px 16px",
+                fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5, cursor: dirty ? "pointer" : "default",
+              }} type="button">{saving ? "SAVING…" : dirty ? "SAVE DAY" : "SAVED"}</button>
+              {planned[selDate] && (
+                <button onClick={clearDay} style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "6px 10px", color: T.danger, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">Clear</button>
+              )}
+            </div>
+          </div>
+
+          {/* Import from athlete's logged history */}
+          {showImport && (
+            <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 11, color: T.muted, fontFamily: "DM Sans", marginBottom: 8 }}>
+                Pull everything the athlete logged on a previous day into this planned day (last 30 days):
+              </div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {historyDays.length === 0 ? <span style={{ fontSize: 11, color: T.muted }}>No logged days found.</span> :
+                  historyDays.map((d) => (
+                    <button key={d} onClick={() => importLoggedDay(d)} style={{ background: "none", border: `1px solid ${T.coachGreen}55`, borderRadius: 7, padding: "5px 10px", color: T.coachGreen, fontSize: 10, fontFamily: "JetBrains Mono, ui-monospace", cursor: "pointer" }} type="button">
+                      {ukShort(d)}
+                    </button>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* Meal slots */}
+          {PLAN_SLOTS.map((slot) => {
+            const items = dayMeals[slot] || [];
+            const st = items.reduce((a, i) => ({ cal: a.cal + i.calories, p: a.p + i.protein_g, c: a.c + i.carbs_g, f: a.f + i.fat_g }), { cal: 0, p: 0, c: 0, f: 0 });
+            return (
+              <div key={slot} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5, color: T.text }}>{slot.toUpperCase()}</span>
+                  <span style={{ fontSize: 9, color: T.accent, fontFamily: "JetBrains Mono, ui-monospace" }}>
+                    {Math.round(st.cal)} cal · {Math.round(st.p)}p · {Math.round(st.c)}c · {Math.round(st.f)}f
+                  </span>
+                </div>
+                {items.map((i, idx) => (
+                  <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${T.border}20`, fontSize: 11 }}>
+                    <span style={{ color: T.text }}>{i.name}</span>
+                    <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                      <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
+                        {i.calories} · {i.protein_g}p · {i.carbs_g}c · {i.fat_g}f
+                      </span>
+                      <button onClick={() => removeItem(slot, idx)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 12 }} type="button">✕</button>
+                    </span>
+                  </div>
+                ))}
+
+                {pickerSlot === slot ? (
+                  <div style={{ marginTop: 8 }}>
+                    <input value={q} onChange={(e) => { setQ(e.target.value); setSelFood(null); }} placeholder="Search foods (DB + OpenFoodFacts)…" autoFocus style={{ ...inputStyle, marginBottom: 6 }} />
+                    {searching && <div style={{ fontSize: 10, color: T.muted, marginBottom: 6 }}>Searching…</div>}
+                    {!selFood && results.length > 0 && (
+                      <div style={{ maxHeight: 160, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 8, marginBottom: 6 }}>
+                        {results.map((r, i) => (
+                          <button key={i} onClick={() => setSelFood(r)} style={{ display: "flex", justifyContent: "space-between", width: "100%", padding: "6px 10px", background: "none", border: "none", borderBottom: `1px solid ${T.border}20`, color: T.text, fontSize: 11, cursor: "pointer", textAlign: "left" }} type="button">
+                            <span>{r.name} <span style={{ color: T.muted, fontSize: 9 }}>({r.src})</span></span>
+                            <span style={{ color: T.muted, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>{Math.round(r.per100.calories)}/100g</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {selFood && (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6 }}>
+                        <span style={{ fontSize: 11, color: T.text, flex: 1 }}>{selFood.name}</span>
+                        <input type="number" value={grams} onChange={(e) => setGrams(e.target.value)} style={{ ...inputStyle, width: 70, textAlign: "center" }} />
+                        <span style={{ fontSize: 10, color: T.muted }}>g</span>
+                        <button onClick={addSearchFood} style={{ background: T.accent, color: T.bg, border: "none", borderRadius: 7, padding: "7px 12px", fontFamily: "Bebas Neue, system-ui", fontSize: 11, letterSpacing: 1, cursor: "pointer" }} type="button">ADD</button>
+                      </div>
+                    )}
+                    {q.trim().length < 2 && recentFoods.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans", margin: "4px 0" }}>ATHLETE'S RECENT FOODS — tap to add as eaten:</div>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
+                          {recentFoods.slice(0, 12).map((f, i) => (
+                            <button key={i} onClick={() => addItem(slot, f)} style={{ background: "none", border: `1px solid ${T.coachGreen}44`, borderRadius: 7, padding: "4px 9px", color: T.coachGreen, fontSize: 10, fontFamily: "DM Sans", cursor: "pointer" }} type="button">
+                              + {f.name.length > 34 ? f.name.slice(0, 32) + "…" : f.name}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <button onClick={() => { setPickerSlot(null); setQ(""); setSelFood(null); setResults([]); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 10, cursor: "pointer" }} type="button">close</button>
+                  </div>
+                ) : (
+                  <button onClick={() => { setPickerSlot(slot); setQ(""); setSelFood(null); setResults([]); }} style={{ width: "100%", marginTop: 6, padding: "7px", background: "none", border: `1px dashed ${T.border}`, borderRadius: 8, color: T.muted, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">
+                    + Add food
+                  </button>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Copy tools */}
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, marginTop: 4 }}>
+            <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5, color: T.text, marginBottom: 8 }}>COPY THIS DAY</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <button onClick={() => copyNextNDays(7)} style={{ background: "none", border: `1px solid ${T.accent}55`, borderRadius: 8, padding: "6px 12px", color: T.accent, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">→ Next 7 days</button>
+              <button onClick={() => copyNextNDays(14)} style={{ background: "none", border: `1px solid ${T.accent}55`, borderRadius: 8, padding: "6px 12px", color: T.accent, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">→ Next 14 days</button>
+              <button onClick={() => copyNextNDays(30)} style={{ background: "none", border: `1px solid ${T.accent}55`, borderRadius: 8, padding: "6px 12px", color: T.accent, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">→ Next 30 days (whole month)</button>
+              <button onClick={() => copyWeekForward(1)} style={{ background: "none", border: `1px solid ${T.coachGreen}55`, borderRadius: 8, padding: "6px 12px", color: T.coachGreen, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">Copy this WEEK → next week</button>
+              <button onClick={() => copyWeekForward(4)} style={{ background: "none", border: `1px solid ${T.coachGreen}55`, borderRadius: 8, padding: "6px 12px", color: T.coachGreen, fontSize: 11, fontFamily: "DM Sans", cursor: "pointer" }} type="button">Copy this WEEK → next 4 weeks</button>
+            </div>
+            <div style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans", marginTop: 8 }}>
+              Save the day first, then copy. Week copy repeats each saved day of this week onto the same weekday ahead.
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Wellbeing Manager — coach sets habits, sees athlete RAG ratings + weight/mood
 ────────────────────────────────────────────────────────────────────────────── */
 function WellbeingManager({ athleteId, token }) {
@@ -3474,6 +3836,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const tabs = [
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
+    { id: "mealplanner", label: "MEAL PLANNER" },
     { id: "messages", label: "MESSAGES" },
     { id: "data", label: "MOOD & WEIGHT" },
     { id: "foodlog", label: "FOOD LOG" },
@@ -3918,6 +4281,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "wellbeing" && (
         <WellbeingManager athleteId={athlete.id} token={token} />
+      )}
+
+      {tab === "mealplanner" && (
+        <MealPlannerTab athleteId={athlete.id} token={token} />
       )}
     </div>
   );

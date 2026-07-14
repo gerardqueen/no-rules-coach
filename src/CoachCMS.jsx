@@ -3704,6 +3704,11 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [resending, setResending] = useState(false);
   const [confirmResend, setConfirmResend] = useState(false);
+  const [isActive, setIsActive] = useState(athlete.active !== false);
+  const [showTransfer, setShowTransfer] = useState(false);
+  const [coachList, setCoachList] = useState([]);
+  const [transferTo, setTransferTo] = useState("");
+  const [transferring, setTransferring] = useState(false);
   const [initialGoals, setInitialGoals] = useState(() => ({
     calories: athlete.macroGoals?.calories ?? 2500,
     protein: athlete.macroGoals?.protein ?? 180,
@@ -3822,6 +3827,93 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
         </div>
 
         {/* Delete athlete button */}
+        {/* Pause / Unpause */}
+        <button
+          onClick={async () => {
+            const next = !isActive;
+            const msg = next
+              ? `Reactivate ${athlete.name}'s account so they can log in again?`
+              : `Pause ${athlete.name}'s account? They won't be able to log in, but ALL their data is kept and nothing is lost. You can unpause any time.`;
+            if (!window.confirm(msg)) return;
+            try {
+              await apiFetch(`/athletes/${athlete.id}/status`, token, {
+                method: "PATCH",
+                body: JSON.stringify({ active: next }),
+              });
+              setIsActive(next);
+            } catch (e) { alert(e.message || "Could not update account status"); }
+          }}
+          style={{
+            background: "none",
+            border: `1px solid ${isActive ? "#f59e0b66" : T.coachGreen + "66"}`,
+            borderRadius: 8,
+            padding: "6px 14px",
+            color: isActive ? "#f59e0b" : T.coachGreen,
+            fontFamily: "DM Sans",
+            fontSize: 11,
+            cursor: "pointer",
+          }}
+          type="button"
+        >
+          {isActive ? "⏸ Pause Account" : "▶ Unpause Account"}
+        </button>
+
+        {/* Transfer to another coach */}
+        {!showTransfer ? (
+          <button
+            onClick={async () => {
+              setShowTransfer(true);
+              if (coachList.length === 0) {
+                try {
+                  const cs = await apiFetch(`/coaches`, token);
+                  setCoachList(Array.isArray(cs) ? cs : []);
+                } catch { setCoachList([]); }
+              }
+            }}
+            style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }}
+            type="button"
+          >
+            ⇄ Transfer
+          </button>
+        ) : (
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <select
+              value={transferTo}
+              onChange={(e) => setTransferTo(e.target.value)}
+              style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 8px", color: T.text, fontFamily: "DM Sans", fontSize: 11 }}
+            >
+              <option value="">Transfer to…</option>
+              {coachList.map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={async () => {
+                if (!transferTo) return;
+                const target = coachList.find((c) => String(c.id) === String(transferTo));
+                if (!window.confirm(`Transfer ${athlete.name} to ${target?.name}? All their data — food logs, weights, mood, habits, planned meals, calendar and notes — moves with them intact.`)) return;
+                setTransferring(true);
+                try {
+                  await apiFetch(`/athletes/${athlete.id}/transfer`, token, {
+                    method: "POST",
+                    body: JSON.stringify({ newCoachId: Number(transferTo) }),
+                  });
+                  alert(`${athlete.name} transferred to ${target?.name}.`);
+                  onDelete?.(athlete.id); // remove from this coach's roster view
+                } catch (e) { alert(e.message || "Transfer failed"); }
+                setTransferring(false);
+                setShowTransfer(false);
+              }}
+              disabled={transferring || !transferTo}
+              style={{ background: transferTo ? T.accent : T.border, color: transferTo ? T.bg : T.muted, border: "none", borderRadius: 6, padding: "6px 12px", fontFamily: "Bebas Neue, system-ui", fontSize: 11, letterSpacing: 1, cursor: transferTo && !transferring ? "pointer" : "default" }}
+              type="button"
+            >
+              {transferring ? "…" : "GO"}
+            </button>
+            <button onClick={() => { setShowTransfer(false); setTransferTo(""); }} style={{ background: "none", border: "none", color: T.muted, fontSize: 11, cursor: "pointer", fontFamily: "DM Sans" }} type="button">cancel</button>
+          </div>
+        )}
+
         {!confirmResend ? (
           <button
             onClick={() => setConfirmResend(true)}
@@ -3902,7 +3994,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
           </button>
         ) : (
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: T.danger, fontFamily: "DM Sans" }}>Are you sure?</span>
+            <span style={{ fontSize: 11, color: T.danger, fontFamily: "DM Sans" }}>Permanently deletes ALL their data — sure? (Pause instead to keep it)</span>
             <button
               onClick={async () => {
                 setDeleting(true);
@@ -4369,6 +4461,7 @@ export default function CoachCMS() {
           name: a.name,
           email: a.email,
           sport: a.sport || "—",
+          active: a.active !== false,
           avatar: initialsOf(a.name),
           avatarColor: randomAvatarColor(),
           macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
@@ -4702,6 +4795,7 @@ export default function CoachCMS() {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <span style={{ fontWeight: 700 }}>{a.name}</span>
                         <Badge label={a.sport || "ATHLETE"} color={T.coachGreen} />
+                        {a.active === false && <Badge label="PAUSED" color="#f59e0b" />}
                       </div>
                       <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 3 }}>
                         {a.email}

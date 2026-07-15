@@ -3499,9 +3499,27 @@ function AdminCoachOverview({ token, myId }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Coach Inbox — unified view of all athlete conversations
 ────────────────────────────────────────────────────────────────────────────── */
-function CoachInbox({ athletes, token, onBroadcast }) {
+function CoachInbox({ athletes, token, onBroadcast, myId }) {
   const [activeId, setActiveId] = useState(null); // "athleteId-chat" or "athleteId-checkin"
   const [messages, setMessages] = useState([]);
+  const [reactFor, setReactFor] = useState(null);
+  const REACT_SET = ["\ud83d\udc4d", "\u2764\ufe0f", "\ud83d\udd25", "\ud83d\udcaa", "\ud83d\ude02"];
+  const reactTo = async (messageId, emoji) => {
+    setReactFor(null);
+    const current = messages.find((m) => m.id === messageId)?.reactions?.find((r) => Number(r.userId) === Number(myId));
+    setMessages((prev) => prev.map((m) => {
+      if (m.id !== messageId) return m;
+      const others = (m.reactions || []).filter((r) => Number(r.userId) !== Number(myId));
+      const next = current?.emoji === emoji ? others : [...others, { userId: myId, emoji }];
+      return { ...m, reactions: next };
+    }));
+    try {
+      await apiFetch(`/messages/${messageId}/reaction`, token, {
+        method: "PUT",
+        body: JSON.stringify({ emoji: current?.emoji === emoji ? null : emoji }),
+      });
+    } catch {}
+  };
   const [unreadMap, setUnreadMap] = useState({}); // { athleteId: count }
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -3662,8 +3680,10 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                 const isCoach = Number(m.fromId) !== Number(athleteIdFromActive);
                 const senderName = m.fromName || (isCoach ? "Coach" : activeAthlete?.name || "Athlete");
                 return (
-                  <div key={m.id} style={{ display: "flex", justifyContent: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                    <div style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4 }}>
+                  <div key={m.id} style={{ display: "flex", flexDirection: "column", alignItems: isCoach ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                    <div
+                      onClick={() => setReactFor(reactFor === m.id ? null : m.id)}
+                      style={{ maxWidth: "75%", padding: "10px 14px", borderRadius: 14, background: isCoach ? T.accent : T.surface, color: isCoach ? T.bg : T.text, borderBottomRightRadius: isCoach ? 4 : 14, borderBottomLeftRadius: isCoach ? 14 : 4, cursor: "pointer" }}>
                       <div style={{ fontFamily: "DM Sans", fontSize: 10, color: isCoach ? `${T.bg}aa` : T.muted, marginBottom: 2 }}>{senderName}</div>
                       <div style={{ fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.5 }}>{m.content}</div>
                       <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: isCoach ? `${T.bg}88` : T.muted, marginTop: 4, textAlign: "right" }}>
@@ -3671,6 +3691,23 @@ function CoachInbox({ athletes, token, onBroadcast }) {
                         {m.messageType === "broadcast" && " · 📢 Announcement"}
                       </div>
                     </div>
+                    {(m.reactions || []).length > 0 && (
+                      <div style={{ display: "flex", gap: 4, marginTop: 3 }}>
+                        {(m.reactions || []).map((r, i) => (
+                          <span key={i} onClick={() => Number(r.userId) === Number(myId) && reactTo(m.id, r.emoji)}
+                            style={{ background: T.surface, border: `1px solid ${Number(r.userId) === Number(myId) ? T.accent : T.border}`, borderRadius: 10, padding: "1px 7px", fontSize: 12, cursor: Number(r.userId) === Number(myId) ? "pointer" : "default" }}>
+                            {r.emoji}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {reactFor === m.id && (
+                      <div style={{ display: "flex", gap: 6, marginTop: 5, background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "5px 10px" }}>
+                        {REACT_SET.map((e) => (
+                          <span key={e} onClick={() => reactTo(m.id, e)} style={{ fontSize: 18, cursor: "pointer" }}>{e}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -4837,6 +4874,7 @@ export default function CoachCMS() {
           <CoachInbox
             athletes={athletes}
             token={token}
+            myId={me?.id}
             onBroadcast={() => setShowBroadcast(true)}
           />
         )}

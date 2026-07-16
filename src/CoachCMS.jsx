@@ -2862,9 +2862,25 @@ function CoachMessaging({ athleteId, athleteName, token }) {
                 <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text }}>{activeThread.subject || "CONVERSATION"}</div>
                 <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>with {athleteName}</div>
               </div>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: T.coachGreen, animation: "pulse 2s infinite" }} />
                 <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen }}>LIVE</span>
+                <button
+                  onClick={async () => {
+                    if (!activeThread) return;
+                    if (!window.confirm(`Delete this entire conversation for both you and ${athleteName}? This can't be undone.`)) return;
+                    try {
+                      await apiFetch(`/messages/threads/${athleteId}/${activeThread.threadId}`, token, { method: "DELETE" });
+                      setView("list");
+                      loadThreads();
+                    } catch (e) { alert(e.message || "Could not delete the conversation"); }
+                  }}
+                  style={{ background: "none", border: "none", color: T.muted, fontSize: 15, cursor: "pointer", padding: 0 }}
+                  title="Delete conversation for both sides"
+                  type="button"
+                >
+                  🗑️
+                </button>
               </div>
             </div>
 

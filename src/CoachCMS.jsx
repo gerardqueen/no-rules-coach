@@ -3504,6 +3504,15 @@ function CoachInbox({ athletes, token, onBroadcast, myId }) {
   const [messages, setMessages] = useState([]);
   const [reactFor, setReactFor] = useState(null);
   const REACT_SET = ["\ud83d\udc4d", "\u2764\ufe0f", "\ud83d\udd25", "\ud83d\udcaa", "\ud83d\ude02"];
+  const deleteMsg = async (messageId) => {
+    setReactFor(null);
+    if (!window.confirm("Delete this message for both you and the athlete?")) return;
+    setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    try {
+      await apiFetch(`/messages/${messageId}`, token, { method: "DELETE" });
+    } catch (e) { alert(e.message || "Could not delete the message"); }
+  };
+
   const reactTo = async (messageId, emoji) => {
     setReactFor(null);
     const current = messages.find((m) => m.id === messageId)?.reactions?.find((r) => Number(r.userId) === Number(myId));
@@ -3702,10 +3711,13 @@ function CoachInbox({ athletes, token, onBroadcast, myId }) {
                       </div>
                     )}
                     {reactFor === m.id && (
-                      <div style={{ display: "flex", gap: 6, marginTop: 5, background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "5px 10px" }}>
+                      <div style={{ display: "flex", gap: 6, marginTop: 5, alignItems: "center", background: T.card, border: `1px solid ${T.border}`, borderRadius: 12, padding: "5px 10px" }}>
                         {REACT_SET.map((e) => (
                           <span key={e} onClick={() => reactTo(m.id, e)} style={{ fontSize: 18, cursor: "pointer" }}>{e}</span>
                         ))}
+                        {isCoach && (
+                          <span onClick={() => deleteMsg(m.id)} style={{ fontSize: 15, cursor: "pointer", marginLeft: 6, paddingLeft: 10, borderLeft: `1px solid ${T.border}` }} title="Delete for both sides">🗑️</span>
+                        )}
                       </div>
                     )}
                   </div>

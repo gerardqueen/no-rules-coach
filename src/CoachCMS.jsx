@@ -2140,6 +2140,117 @@ function MealPlannerTab({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Steps Manager — coach sets a daily step target and sees the athlete's
+   synced step counts (uploaded by the athlete's app from Apple Health).
+────────────────────────────────────────────────────────────────────────────── */
+function StepsManager({ athleteId, token }) {
+  const [target, setTarget] = useState(null);
+  const [draft, setDraft] = useState("");
+  const [savingT, setSavingT] = useState(false);
+  const [days, setDays] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const last7 = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return fmt(d); });
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+
+  const load = async () => {
+    try {
+      let t = null, rows = [];
+      try { const r = await apiFetch(`/step-target/${athleteId}`, token); t = r?.steps ?? null; } catch {}
+      try { rows = await apiFetch(`/step-logs/${athleteId}?start=${last7[0]}&end=${last7[6]}`, token); } catch {}
+      setTarget(t);
+      setDraft(t != null ? String(t) : "");
+      const map = {};
+      (Array.isArray(rows) ? rows : []).forEach((r) => { map[r.date] = Number(r.steps || 0); });
+      setDays(last7.map((d) => ({ date: d, steps: map[d] || 0 })));
+    } catch {}
+    setLoading(false);
+  };
+  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } }, [athleteId, token]);
+
+  const saveTarget = async () => {
+    setSavingT(true);
+    try {
+      const steps = draft.trim() === "" ? null : Math.max(0, Number(draft) || 0);
+      await apiFetch(`/athletes/${athleteId}/step-target`, token, {
+        method: "PUT",
+        body: JSON.stringify({ steps }),
+      });
+      setTarget(steps);
+    } catch (e) { alert(e.message || "Could not save step target"); }
+    setSavingT(false);
+  };
+
+  const maxVal = Math.max(...days.map((d) => d.steps), target || 0, 1) * 1.05;
+  const ragColor = (v) => {
+    if (!target || target <= 0) return null;
+    const pct = (v / target) * 100;
+    if (pct >= 90) return T.coachGreen;
+    if (pct >= 75) return "#f59e0b";
+    return T.danger;
+  };
+  const targetPct = target > 0 ? (target / maxVal) * 100 : null;
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>STEPS</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input
+            type="number"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Daily target"
+            style={{ ...inputStyle, width: 110, padding: "7px 10px", fontSize: 12 }}
+          />
+          <button onClick={saveTarget} disabled={savingT} style={{
+            background: T.accent, color: T.bg, border: "none", borderRadius: 8, padding: "8px 14px",
+            fontFamily: "Bebas Neue, system-ui", fontSize: 12, letterSpacing: 1.5, cursor: "pointer", opacity: savingT ? 0.6 : 1,
+          }} type="button">{savingT ? "…" : "SET TARGET"}</button>
+        </div>
+      </div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        {target > 0
+          ? <>Target: <span style={{ color: T.coachGreen }}>{Number(target).toLocaleString()} steps/day</span> — green ≥90%, amber ≥75%, red below. Data syncs from the athlete's Apple Health.</>
+          : "No target set. Steps sync from the athlete's Apple Health when they open the app."}
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> :
+        days.every((d) => d.steps === 0) ? (
+          <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans" }}>
+            No step data synced yet — it appears after the athlete connects Apple Health and opens their Wellbeing tab.
+          </div>
+        ) : (
+        <div style={{ position: "relative", maxWidth: 480 }}>
+          {targetPct != null && (
+            <div style={{ position: "absolute", left: 0, right: 0, bottom: `${16 + targetPct * 0.56}px`, borderTop: `2px dotted ${T.coachGreen}99`, zIndex: 2, pointerEvents: "none" }} />
+          )}
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 84 }}>
+            {days.map((d) => {
+              const rag = d.steps > 0 ? ragColor(d.steps) : null;
+              return (
+                <div key={d.date} style={{ flex: 1, textAlign: "center" }}>
+                  <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted, marginBottom: 2 }}>
+                    {d.steps > 0 ? (d.steps >= 1000 ? `${Math.round(d.steps / 100) / 10}k` : d.steps) : ""}
+                  </div>
+                  <div style={{
+                    height: Math.max((d.steps / maxVal) * 56, 2),
+                    background: rag || `${T.accent}88`,
+                    borderRadius: 3,
+                  }} title={`${d.steps.toLocaleString()} steps`} />
+                  <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.muted, marginTop: 3 }}>{ukShort(d.date)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Wellbeing Manager — coach sets habits, sees athlete RAG ratings + weight/mood
 ────────────────────────────────────────────────────────────────────────────── */
 function WellbeingManager({ athleteId, token }) {
@@ -2254,6 +2365,9 @@ function WellbeingManager({ athleteId, token }) {
           </div>
         )}
       </div>
+
+      {/* Steps: coach-set daily target + athlete's synced HealthKit data */}
+      <StepsManager athleteId={athleteId} token={token} />
 
       {/* Weight + Mood graphs (moved from the old MOOD & WEIGHT tab) */}
       <AthleteMoodViewer athleteId={athleteId} token={token} />

@@ -2140,6 +2140,87 @@ function MealPlannerTab({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Sleep Viewer — nightly sleep patterns synced from the athlete's Apple Health.
+────────────────────────────────────────────────────────────────────────────── */
+function SleepViewer({ athleteId, token }) {
+  const [nights, setNights] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const last7 = [...Array(7)].map((_, i) => { const d = new Date(); d.setDate(d.getDate() - (6 - i)); return fmt(d); });
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const rows = await apiFetch(`/sleep-logs/${athleteId}?start=${last7[0]}&end=${last7[6]}`, token);
+        const map = {};
+        (Array.isArray(rows) ? rows : []).forEach((r) => { map[r.date] = r; });
+        setNights(last7.map((d) => map[d] ? { ...map[d], empty: false } : { date: d, empty: true }));
+      } catch { setNights([]); }
+      setLoading(false);
+    })();
+  }, [athleteId, token]);
+
+  const STAGE_COLOR = { awake: "#fb923c", rem: "#38bdf8", light: "#3b82f6", deep: "#4f46e5", asleep: "#3b82f6" };
+  const STAGE_LABEL = { awake: "Awake", rem: "REM", light: "Core", deep: "Deep", asleep: "Asleep" };
+  const anyData = nights.some((n) => !n.empty);
+  const anyStages = nights.some((n) => !n.empty && (n.segments || []).some((g) => ["awake", "rem", "deep", "light"].includes(g.stage)));
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 4 }}>SLEEP</div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        Nightly patterns from the athlete's Apple Health — updates when they open the app.
+      </div>
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : !anyData ? (
+        <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans" }}>
+          No sleep data synced yet — it appears after the athlete connects Apple Health and opens their Wellbeing tab.
+        </div>
+      ) : (
+        <div style={{ maxWidth: 520 }}>
+          {nights.map((n) => (
+            <div key={n.date} style={{ marginBottom: 9 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 2 }}>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{ukShort(n.date)}</span>
+                {!n.empty && (
+                  <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>
+                    🛏 {n.bed} → ⏰ {n.wake} · <span style={{ color: T.accent }}>{Number(n.hours)}h</span>
+                  </span>
+                )}
+              </div>
+              <div style={{ position: "relative", height: 13, background: T.surface, border: `1px solid ${T.border}40`, borderRadius: 6, overflow: "hidden" }}>
+                {n.empty ? (
+                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: T.border }}>—</div>
+                ) : (
+                  (n.segments || []).map((g, i) => (
+                    <div key={i} style={{
+                      position: "absolute", left: `${g.leftPct}%`, width: `${Math.max(g.widthPct, 0.6)}%`,
+                      top: 0, bottom: 0, background: STAGE_COLOR[g.stage] || STAGE_COLOR.asleep,
+                    }} title={STAGE_LABEL[g.stage] || "Asleep"} />
+                  ))
+                )}
+              </div>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+            {(anyStages ? ["deep", "light", "rem", "awake"] : ["asleep"]).map((k) => (
+              <span key={k} style={{ fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>
+                <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 3, background: STAGE_COLOR[k], marginRight: 4, verticalAlign: "middle" }} />
+                {STAGE_LABEL[k]}
+              </span>
+            ))}
+            <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.border }}>gaps = out of bed</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Steps Manager — coach sets a daily step target and sees the athlete's
    synced step counts (uploaded by the athlete's app from Apple Health).
 ────────────────────────────────────────────────────────────────────────────── */
@@ -2368,6 +2449,9 @@ function WellbeingManager({ athleteId, token }) {
 
       {/* Steps: coach-set daily target + athlete's synced HealthKit data */}
       <StepsManager athleteId={athleteId} token={token} />
+
+      {/* Sleep: nightly patterns synced from the athlete's Apple Health */}
+      <SleepViewer athleteId={athleteId} token={token} />
 
       {/* Weight + Mood graphs (moved from the old MOOD & WEIGHT tab) */}
       <AthleteMoodViewer athleteId={athleteId} token={token} />

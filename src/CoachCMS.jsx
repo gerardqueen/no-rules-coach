@@ -1642,7 +1642,7 @@ function AthleteVideoManager({ athleteId, token }) {
 function AthleteCheckInManager({ athleteId, token }) {
   const [checkins, setCheckins] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({ date: "", time: "", title: "", notes: "", linkUrl: "" });
+  const [form, setForm] = useState({ date: "", time: "", title: "", notes: "", linkUrl: "", repeatWeekly: false, repeatWeeks: 12 });
   const [saving, setSaving] = useState(false);
 
   const loadCheckins = async () => {
@@ -1723,6 +1723,29 @@ function AthleteCheckInManager({ athleteId, token }) {
             style={{ ...inputStyle, resize: "vertical", minHeight: 80, fontFamily: "DM Sans" }}
           />
         </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "DM Sans", fontSize: 12, color: T.text, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={!!form.repeatWeekly}
+              onChange={(e) => setForm(p => ({ ...p, repeatWeekly: e.target.checked }))}
+            />
+            ↻ Repeat weekly (same day &amp; time)
+          </label>
+          {form.repeatWeekly && (
+            <select
+              value={form.repeatWeeks}
+              onChange={(e) => setForm(p => ({ ...p, repeatWeeks: Number(e.target.value) }))}
+              style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 8px", color: T.text, fontFamily: "DM Sans", fontSize: 11 }}
+            >
+              <option value={4}>for 4 weeks</option>
+              <option value={8}>for 8 weeks</option>
+              <option value={12}>for 12 weeks</option>
+              <option value={26}>for 26 weeks</option>
+              <option value={52}>for 52 weeks</option>
+            </select>
+          )}
+        </div>
         <div style={{ display: "flex", gap: 8, alignItems: "end" }}>
           <div style={{ flex: 1 }}>
             <label style={labelStyle}>Google Meet / video link (optional)</label>
@@ -1753,11 +1776,34 @@ function AthleteCheckInManager({ athleteId, token }) {
                     {String(c.date).split("-").reverse().join("/")}
                   </span>
                   <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1, color: T.text }}>{c.title}</span>
+                  {c.seriesId && (
+                    <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen, border: `1px solid ${T.coachGreen}55`, borderRadius: 6, padding: "1px 6px" }}>
+                      ↻ WEEKLY
+                    </span>
+                  )}
                 </div>
-                <button onClick={() => deleteCheckin(c.id)} style={{
-                  background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6,
-                  padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer",
-                }} type="button">✕</button>
+                <span style={{ display: "flex", gap: 5 }}>
+                  {c.seriesId && (
+                    <button
+                      onClick={async () => {
+                        if (!window.confirm("End this weekly series? This and all FUTURE occurrences are removed; past check-ins are kept.")) return;
+                        try {
+                          await apiFetch(`/checkins/${athleteId}/series/${c.seriesId}?from=${c.date}`, token, { method: "DELETE" });
+                          loadCheckins();
+                        } catch (e) { alert(e.message || "Could not end the series"); }
+                      }}
+                      style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 6, padding: "4px 8px", color: T.muted, fontSize: 10, cursor: "pointer" }}
+                      type="button"
+                      title="End the weekly series from this date"
+                    >
+                      ↻ end series
+                    </button>
+                  )}
+                  <button onClick={() => deleteCheckin(c.id)} style={{
+                    background: "none", border: `1px solid ${T.danger}44`, borderRadius: 6,
+                    padding: "4px 8px", color: T.danger, fontSize: 10, cursor: "pointer",
+                  }} type="button" title="Delete just this occurrence">✕</button>
+                </span>
               </div>
               {c.notes && (
                 <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, lineHeight: 1.6, whiteSpace: "pre-wrap", marginBottom: c.linkUrl ? 8 : 0 }}>

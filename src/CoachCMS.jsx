@@ -1158,6 +1158,31 @@ function AthleteWeightViewer({ athleteId, token }) {
   const [weights, setWeights] = useState([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState(30);
+  // Coach weight entry (today or backdated)
+  const todayISO = (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; })();
+  const [entryDate, setEntryDate] = useState(todayISO);
+  const [entryKg, setEntryKg] = useState("");
+  const [savingW, setSavingW] = useState(false);
+  const [entryMsg, setEntryMsg] = useState("");
+
+  const saveWeight = async () => {
+    const kg = Number(entryKg);
+    if (!entryDate || !Number.isFinite(kg) || kg <= 0) { setEntryMsg("Enter a date and a weight in kg."); return; }
+    if (kg > 400) { setEntryMsg("That weight looks wrong — check the number."); return; }
+    setSavingW(true); setEntryMsg("");
+    try {
+      const rows = await apiFetch(`/weights/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({ date: entryDate, kg }),
+      });
+      if (Array.isArray(rows)) setWeights(rows);
+      const uk = entryDate.split("-").reverse().join("/");
+      setEntryMsg(`Saved ${kg} kg for ${uk}.`);
+      setEntryKg("");
+      setTimeout(() => setEntryMsg(""), 3000);
+    } catch (e) { setEntryMsg(e.message || "Could not save the weight"); }
+    setSavingW(false);
+  };
 
   const load = async () => {
     if (!athleteId || !token) return;
@@ -1207,6 +1232,63 @@ function AthleteWeightViewer({ athleteId, token }) {
           ))}
         </div>
       </div>
+      {/* Coach weight entry — today or any past date */}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "end", flexWrap: "wrap" }}>
+          <div>
+            <label style={labelStyle}>Date</label>
+            <input
+              type="date"
+              value={entryDate}
+              max={todayISO}
+              onChange={(e) => setEntryDate(e.target.value)}
+              style={{ ...inputStyle, width: 150, padding: "7px 10px", fontSize: 12 }}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Weight (kg)</label>
+            <input
+              type="number"
+              step="0.1"
+              value={entryKg}
+              onChange={(e) => setEntryKg(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && saveWeight()}
+              placeholder="e.g. 82.4"
+              style={{ ...inputStyle, width: 110, padding: "7px 10px", fontSize: 12 }}
+            />
+          </div>
+          <button
+            onClick={saveWeight}
+            disabled={savingW}
+            style={{
+              background: T.accent, color: T.bg, border: "none", borderRadius: 8,
+              padding: "9px 16px", fontFamily: "Bebas Neue, system-ui", fontSize: 12,
+              letterSpacing: 1.5, cursor: savingW ? "default" : "pointer", opacity: savingW ? 0.6 : 1,
+            }}
+            type="button"
+          >
+            {savingW ? "SAVING…" : "ADD WEIGHT"}
+          </button>
+          {(() => {
+            const existing = weights.find((w) => w.date === entryDate);
+            if (!existing) return null;
+            return (
+              <span style={{ fontFamily: "DM Sans", fontSize: 10, color: "#f59e0b" }}>
+                {Number(existing.kg).toFixed(1)} kg already logged for this date — saving overwrites it
+              </span>
+            );
+          })()}
+        </div>
+        {entryMsg && (
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: entryMsg.startsWith("Saved") ? T.coachGreen : T.danger, marginTop: 8 }}>
+            {entryMsg}
+          </div>
+        )}
+        <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, marginTop: 6 }}>
+          Backdate the date field to add historic weigh-ins. Athlete entries and coach entries share the same record.
+        </div>
+      </div>
+
       {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : (
         <TimeSeriesChart
           data={chartData}

@@ -2268,6 +2268,120 @@ function MealPlannerTab({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Workout Viewer — training sessions synced from the athlete's Apple Health.
+────────────────────────────────────────────────────────────────────────────── */
+function WorkoutViewer({ athleteId, token }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(14);
+
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const end = new Date();
+        const start = new Date(); start.setDate(start.getDate() - (days - 1));
+        const r = await apiFetch(`/workout-logs/${athleteId}?start=${fmt(start)}&end=${fmt(end)}`, token);
+        setRows(Array.isArray(r) ? r : []);
+      } catch { setRows([]); }
+      setLoading(false);
+    })();
+  }, [athleteId, token, days]);
+
+  const totalMins = rows.reduce((a, w) => a + Number(w.minutes || 0), 0);
+  const totalKcal = rows.reduce((a, w) => a + Number(w.calories || 0), 0);
+  const totalKm = rows.reduce((a, w) => a + Number(w.distanceKm || 0), 0);
+
+  // Group by activity type for a quick "what are they actually doing" summary
+  const byType = {};
+  rows.forEach((w) => {
+    const t = w.type || "Workout";
+    byType[t] = byType[t] || { count: 0, mins: 0 };
+    byType[t].count += 1;
+    byType[t].mins += Number(w.minutes || 0);
+  });
+  const types = Object.entries(byType).sort((a, b) => b[1].mins - a[1].mins);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>TRAINING &amp; ACTIVITY</div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {[7, 14, 30].map((d) => (
+            <button key={d} onClick={() => setDays(d)} style={{
+              background: days === d ? `${T.accent}22` : "none",
+              border: `1px solid ${days === d ? T.accent : T.border}`,
+              borderRadius: 7, padding: "4px 10px",
+              color: days === d ? T.accent : T.muted,
+              fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, cursor: "pointer",
+            }} type="button">{d}D</button>
+          ))}
+        </div>
+      </div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        Runs, rides, gym sessions and other workouts — synced from the athlete's Apple Health.
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : rows.length === 0 ? (
+        <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans" }}>
+          No workouts synced for this period.
+        </div>
+      ) : (
+        <>
+          {/* Totals */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+            {[
+              { l: "SESSIONS", v: rows.length },
+              { l: "ACTIVE MINS", v: Math.round(totalMins) },
+              { l: "KCAL", v: Math.round(totalKcal) || "—" },
+              { l: "DISTANCE", v: totalKm > 0 ? `${Math.round(totalKm * 10) / 10} km` : "—" },
+            ].map((c) => (
+              <div key={c.l} style={{ flex: "1 1 90px", background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 17, color: T.accent }}>{c.v}</div>
+                <div style={{ fontFamily: "DM Sans", fontSize: 8, letterSpacing: 0.5, color: T.muted }}>{c.l}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Activity mix */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {types.map(([t, v]) => (
+              <span key={t} style={{ background: T.surface, border: `1px solid ${T.coachGreen}44`, borderRadius: 8, padding: "3px 9px", fontFamily: "DM Sans", fontSize: 10, color: T.text }}>
+                {t} <span style={{ color: T.muted }}>×{v.count} · {Math.round(v.mins)}min</span>
+              </span>
+            ))}
+          </div>
+
+          {/* Session list */}
+          <div style={{ maxHeight: 260, overflowY: "auto" }}>
+            {rows.map((w, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${T.border}25` }}>
+                <div>
+                  <span style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text }}>{w.type || "Workout"}</span>
+                  <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted, marginLeft: 8 }}>
+                    {ukShort(w.date)}{w.startTime ? ` · ${w.startTime}` : ""}
+                  </span>
+                </div>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.accent, whiteSpace: "nowrap" }}>
+                  {Math.round(Number(w.minutes || 0))}min
+                  {Number(w.distanceKm) > 0 ? ` · ${Number(w.distanceKm)}km` : ""}
+                  {Number(w.calories) > 0 ? ` · ${Math.round(Number(w.calories))}kcal` : ""}
+                  {Number(w.avgHr) > 0 ? ` · ${Math.round(Number(w.avgHr))}bpm` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Sleep Viewer — nightly sleep patterns synced from the athlete's Apple Health.
 ────────────────────────────────────────────────────────────────────────────── */
 function SleepViewer({ athleteId, token }) {
@@ -2580,6 +2694,9 @@ function WellbeingManager({ athleteId, token }) {
 
       {/* Sleep: nightly patterns synced from the athlete's Apple Health */}
       <SleepViewer athleteId={athleteId} token={token} />
+
+      {/* Workouts: sessions synced from the athlete's Apple Health */}
+      <WorkoutViewer athleteId={athleteId} token={token} />
 
       {/* Weight + Mood graphs (moved from the old MOOD & WEIGHT tab) */}
       <AthleteMoodViewer athleteId={athleteId} token={token} />

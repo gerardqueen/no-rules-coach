@@ -1434,7 +1434,10 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
                         borderRadius: "3px 3px 0 0", transition: "all .2s",
                       }} />
                     </div>
-                    <div style={{ fontSize: 7, fontFamily: "JetBrains Mono, ui-monospace", color: isExpanded ? T.accent : T.muted, marginTop: 2 }}>
+                    <div style={{ fontSize: 7, fontFamily: "DM Sans", color: isExpanded ? T.accent : T.muted, marginTop: 2, textTransform: "uppercase" }}>
+                      {new Date(d.date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short" })}
+                    </div>
+                    <div style={{ fontSize: 7, fontFamily: "JetBrains Mono, ui-monospace", color: isExpanded ? T.accent : T.muted }}>
                       {ukShort(d.date)}
                     </div>
                   </div>
@@ -1452,7 +1455,9 @@ function AthleteFoodLogViewer({ athleteId, token, macroTarget }) {
           {/* Expanded food items for selected day */}
           {expandedDay && (
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 12, animation: "fadeUp .15s ease" }}>
-              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, color: T.accent, marginBottom: 8 }}>{ukLong(expandedDay)}</div>
+              <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5, color: T.accent, marginBottom: 8 }}>
+                {new Date(expandedDay + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" }).toUpperCase()} {ukLong(expandedDay)}
+              </div>
               {(() => {
                 const dd = dayData.find(d => d.date === expandedDay);
                 const foods = dd?.foods || [];
@@ -3013,7 +3018,9 @@ function WeeklyAdherenceView({ athleteId, token }) {
                   fontFamily: "Bebas Neue, system-ui", fontSize: 14, letterSpacing: 1.5,
                   color: isToday ? T.accent : T.text, minWidth: 36,
                 }}>{dayKey}</span>
-                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>{String(dateStr).slice(5).split("-").reverse().join("/")}</span>
+                <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.muted }}>
+                  {new Date(dateStr + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short" })} {String(dateStr).slice(5).split("-").reverse().join("/")}
+                </span>
                 {isToday && <span style={{ fontSize: 9, color: T.accent, fontFamily: "DM Sans", fontWeight: 700 }}>TODAY</span>}
                 {!hasData && <span style={{ fontSize: 9, color: T.muted, fontFamily: "DM Sans", fontStyle: "italic" }}>No food logged</span>}
               </div>

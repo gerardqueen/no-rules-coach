@@ -2387,6 +2387,116 @@ function WorkoutViewer({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Measurements Viewer — body measurements logged by the athlete or coach.
+────────────────────────────────────────────────────────────────────────────── */
+const M_SITES = [
+  { k: "waist", label: "Waist" },
+  { k: "hips", label: "Hips" },
+  { k: "chest", label: "Chest" },
+  { k: "thigh", label: "Thigh" },
+  { k: "arm", label: "Arm" },
+  { k: "neck", label: "Neck" },
+];
+
+function MeasurementsViewer({ athleteId, token }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    try {
+      const r = await apiFetch(`/measurements/${athleteId}`, token);
+      setRows(Array.isArray(r) ? r : []);
+    } catch { setRows([]); }
+    setLoading(false);
+  };
+  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } }, [athleteId, token]);
+
+  const uk = (iso) => String(iso).split("-").reverse().join("/");
+
+  // Latest + first values per site, so change over time is visible.
+  const summary = M_SITES.map((s) => {
+    const mine = rows.filter((r) => r.site === s.k).sort((a, b) => a.date.localeCompare(b.date));
+    const latest = mine[mine.length - 1];
+    const first = mine[0];
+    const prev = mine[mine.length - 2];
+    return {
+      ...s,
+      latest: latest ? Number(latest.cm) : null,
+      date: latest?.date || null,
+      change: latest && prev ? Math.round((Number(latest.cm) - Number(prev.cm)) * 10) / 10 : null,
+      total: latest && first && mine.length > 1 ? Math.round((Number(latest.cm) - Number(first.cm)) * 10) / 10 : null,
+      count: mine.length,
+    };
+  });
+  const any = summary.some((s) => s.latest != null);
+
+  // Dates with any measurement, most recent first
+  const dates = [...new Set(rows.map((r) => r.date))].sort().reverse().slice(0, 8);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text, marginBottom: 4 }}>MEASUREMENTS</div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        Tape measurements in cm — logged by the athlete in their Wellbeing tab.
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : !any ? (
+        <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans" }}>No measurements logged yet.</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8, marginBottom: 14 }}>
+            {summary.filter((s) => s.latest != null).map((s) => (
+              <div key={s.k} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 8px", textAlign: "center" }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 8, letterSpacing: 0.5, color: T.muted }}>{s.label.toUpperCase()}</div>
+                <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 20, color: T.accent, lineHeight: 1.2 }}>
+                  {s.latest}<span style={{ fontSize: 10, color: T.muted }}> cm</span>
+                </div>
+                {s.total != null && s.total !== 0 && (
+                  <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 8, color: s.total < 0 ? T.coachGreen : "#f59e0b" }}>
+                    {s.total > 0 ? "+" : ""}{s.total} overall
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* History table */}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "4px 6px", color: T.muted, fontFamily: "DM Sans", fontSize: 9, fontWeight: 400 }}>DATE</th>
+                  {M_SITES.filter((s) => rows.some((r) => r.site === s.k)).map((s) => (
+                    <th key={s.k} style={{ textAlign: "right", padding: "4px 6px", color: T.muted, fontFamily: "DM Sans", fontSize: 9, fontWeight: 400 }}>
+                      {s.label.toUpperCase()}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {dates.map((d) => (
+                  <tr key={d} style={{ borderTop: `1px solid ${T.border}30` }}>
+                    <td style={{ padding: "5px 6px", color: T.text, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>{uk(d)}</td>
+                    {M_SITES.filter((s) => rows.some((r) => r.site === s.k)).map((s) => {
+                      const cell = rows.find((r) => r.date === d && r.site === s.k);
+                      return (
+                        <td key={s.k} style={{ padding: "5px 6px", textAlign: "right", color: cell ? T.text : T.border, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10 }}>
+                          {cell ? Number(cell.cm) : "—"}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Sleep Viewer — nightly sleep patterns synced from the athlete's Apple Health.
 ────────────────────────────────────────────────────────────────────────────── */
 function SleepViewer({ athleteId, token }) {
@@ -2706,6 +2816,7 @@ function WellbeingManager({ athleteId, token }) {
       {/* Weight + Mood graphs (moved from the old MOOD & WEIGHT tab) */}
       <AthleteMoodViewer athleteId={athleteId} token={token} />
       <AthleteWeightViewer athleteId={athleteId} token={token} />
+      <MeasurementsViewer athleteId={athleteId} token={token} />
     </div>
   );
 }

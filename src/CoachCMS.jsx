@@ -1911,6 +1911,243 @@ function AthleteCheckInManager({ athleteId, token }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+   Programming Tab — one free-text block per day. Deliberately simple: the
+   coach types the session however they like and it reaches the athlete as
+   written. Days with programming are marked on the strip.
+────────────────────────────────────────────────────────────────────────────── */
+function ProgrammingTab({ athleteId, token }) {
+  const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const ukLong = (iso) => String(iso).split("-").reverse().join("/");
+  const ukShort = (iso) => { const [, m, d] = String(iso).split("-"); return `${d}/${m}`; };
+  const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return fmt(d); };
+  const todayStr = fmt(new Date());
+
+  const [weekOffset, setWeekOffset] = useState(0);
+  const startDate = addDays(todayStr, weekOffset * 28);
+  const dates = [...Array(28)].map((_, i) => addDays(startDate, i));
+
+  const [byDate, setByDate] = useState({});      // date -> sessions[]
+  const [plannedMeals, setPlannedMeals] = useState({}); // date -> meals (context)
+  const [selDate, setSelDate] = useState(todayStr);
+  const [draft, setDraft] = useState([]);        // sessions being edited
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  const load = async () => {
+    try {
+      const [prog, meals] = await Promise.all([
+        apiFetch(`/programming/${athleteId}?start=${dates[0]}&end=${dates[27]}`, token).catch(() => []),
+        apiFetch(`/planned-meals/${athleteId}?start=${dates[0]}&end=${dates[27]}`, token).catch(() => []),
+      ]);
+      const map = {};
+      (Array.isArray(prog) ? prog : []).forEach((row) => { map[row.date] = row.sessions || []; });
+      setByDate(map);
+      const mm = {};
+      (Array.isArray(meals) ? meals : []).forEach((row) => { mm[row.date] = row.meals || {}; });
+      setPlannedMeals(mm);
+    } catch { setByDate({}); }
+    setLoading(false);
+  };
+  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } }, [athleteId, token, weekOffset]);
+  useEffect(() => { setDraft((byDate[selDate] || []).map((x) => ({ ...x }))); setDirty(false); }, [selDate, byDate]);
+
+  const setSession = (i, patch) => {
+    setDraft((p) => p.map((sx, idx) => (idx === i ? { ...sx, ...patch } : sx)));
+    setDirty(true);
+  };
+  const addSession = () => {
+    setDraft((p) => [...p, { title: p.length === 0 ? "Session" : `Session ${p.length + 1}`, time: "", body: "" }]);
+    setDirty(true);
+  };
+  const removeSession = (i) => {
+    setDraft((p) => p.filter((_, idx) => idx !== i));
+    setDirty(true);
+  };
+
+  const save = async () => {
+    setSaving(true); setMsg("");
+    try {
+      const sessions = draft
+        .filter((x) => String(x.body || "").trim())
+        .map((x) => ({ title: x.title || "Session", time: x.time || null, body: x.body }));
+      await apiFetch(`/programming/${athleteId}`, token, {
+        method: "PUT",
+        body: JSON.stringify({ date: selDate, sessions }),
+      });
+      setByDate((p) => {
+        const n = { ...p };
+        if (sessions.length) n[selDate] = sessions; else delete n[selDate];
+        return n;
+      });
+      setDirty(false);
+      setMsg(sessions.length ? `Saved ${sessions.length} session(s).` : "Day cleared.");
+      setTimeout(() => setMsg(""), 2200);
+    } catch (e) { setMsg(e.message || "Could not save"); }
+    setSaving(false);
+  };
+
+  const copyForward = async (n) => {
+    if (dirty) { alert("Save this day first, then copy it."); return; }
+    const sessions = byDate[selDate] || [];
+    if (!sessions.length) { alert("Nothing to copy on this day."); return; }
+    const days = [...Array(n)].map((_, i) => ({ date: addDays(selDate, i + 1), sessions }));
+    try {
+      const r = await apiFetch(`/programming/${athleteId}/bulk`, token, {
+        method: "POST",
+        body: JSON.stringify({ days }),
+      });
+      setMsg(`Copied to the next ${r.saved} day(s).`);
+      setTimeout(() => setMsg(""), 2500);
+      await load();
+    } catch (e) { alert(e.message || "Copy failed"); }
+  };
+
+  // Meal context for the selected day, so training and food can be planned together
+  const dayMeals = plannedMeals[selDate] || {};
+  const mealSlots = ["Breakfast", "Lunch", "Dinner", "Snack"].filter((m) => (dayMeals[m] || []).length > 0);
+  const mealCals = (slot) => (dayMeals[slot] || []).reduce((a, i) => a + Number(i.calories || 0), 0);
+
+  return (
+    <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>PROGRAMMING</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button onClick={() => setWeekOffset((o) => o - 1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "4px 10px", color: T.text, cursor: "pointer" }} type="button">◀</button>
+          <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
+            {ukShort(dates[0])} – {ukShort(dates[27])}
+          </span>
+          <button onClick={() => setWeekOffset((o) => o + 1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "4px 10px", color: T.text, cursor: "pointer" }} type="button">▶</button>
+        </div>
+      </div>
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
+        Add one or more sessions per day. Line breaks are kept exactly as typed.
+      </div>
+
+      {/* Day strip */}
+      <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
+        {dates.map((d) => {
+          const count = (byDate[d] || []).length;
+          const hasFood = Object.values(plannedMeals[d] || {}).some((arr) => (arr || []).length > 0);
+          const sel = d === selDate;
+          const isToday = d === todayStr;
+          return (
+            <button
+              key={d}
+              onClick={() => { if (dirty && !window.confirm("Discard unsaved changes on this day?")) return; setSelDate(d); }}
+              style={{
+                minWidth: 52, padding: "6px 4px", borderRadius: 9,
+                border: `1px solid ${sel ? T.accent : count ? T.coachGreen + "66" : T.border}`,
+                background: sel ? `${T.accent}22` : "none",
+                color: sel ? T.accent : T.text, cursor: "pointer", flexShrink: 0,
+              }}
+              type="button"
+            >
+              <div style={{ fontSize: 8, fontFamily: "DM Sans", color: isToday ? T.accent : T.muted }}>
+                {new Date(d + "T00:00:00").toLocaleDateString("en-GB", { weekday: "short" }).toUpperCase()}
+              </div>
+              <div style={{ fontSize: 11, fontFamily: "JetBrains Mono, ui-monospace" }}>{ukShort(d)}</div>
+              <div style={{ display: "flex", gap: 3, justifyContent: "center", marginTop: 3, height: 5 }}>
+                {count > 0 && <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.coachGreen }} title={`${count} session(s)`} />}
+                {hasFood && <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.accent }} title="Meals planned" />}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : (
+        <>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+            <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, letterSpacing: 1.5, color: T.accent }}>
+              {new Date(selDate + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" }).toUpperCase()} {ukLong(selDate)}
+            </span>
+            {msg && <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>{msg}</span>}
+          </div>
+
+          {/* Food planned that day — so training can be built around it */}
+          {mealSlots.length > 0 && (
+            <div style={{ background: T.surface, border: `1px solid ${T.accent}33`, borderRadius: 10, padding: "8px 12px", marginBottom: 12 }}>
+              <span style={{ fontFamily: "DM Sans", fontSize: 9, letterSpacing: 1, color: T.accent }}>MEALS PLANNED THIS DAY: </span>
+              <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
+                {mealSlots.map((m) => `${m} ${Math.round(mealCals(m))}kcal`).join("  ·  ")}
+              </span>
+            </div>
+          )}
+
+          {draft.length === 0 && (
+            <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.muted, marginBottom: 10 }}>
+              No sessions on this day yet.
+            </div>
+          )}
+
+          {draft.map((sx, i) => (
+            <div key={i} style={{ border: `1px solid ${T.border}`, borderRadius: 12, padding: 12, marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center" }}>
+                <input
+                  value={sx.title || ""}
+                  onChange={(e) => setSession(i, { title: e.target.value })}
+                  placeholder="Session name (e.g. AM Strength)"
+                  style={{ ...inputStyle, flex: 1, padding: "7px 10px", fontSize: 12 }}
+                />
+                <input
+                  type="time"
+                  value={sx.time || ""}
+                  onChange={(e) => setSession(i, { time: e.target.value })}
+                  style={{ ...inputStyle, width: 110, padding: "7px 8px", fontSize: 12 }}
+                />
+                <button
+                  onClick={() => removeSession(i)}
+                  style={{ background: "none", border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "6px 10px", color: T.danger, fontSize: 11, cursor: "pointer" }}
+                  type="button"
+                  title="Remove session"
+                >
+                  ✕
+                </button>
+              </div>
+              <textarea
+                value={sx.body || ""}
+                onChange={(e) => setSession(i, { body: e.target.value })}
+                placeholder={"A. Back squat 5x3 @ 80%\nB. RDL 3x8\nC. 10 min AMRAP"}
+                rows={8}
+                style={{
+                  width: "100%", background: T.surface, border: `1px solid ${T.border}`,
+                  borderRadius: 10, padding: 12, color: T.text,
+                  fontFamily: "JetBrains Mono, ui-monospace", fontSize: 13, lineHeight: 1.6,
+                  resize: "vertical", outline: "none", boxSizing: "border-box",
+                }}
+              />
+            </div>
+          ))}
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+            <button onClick={addSession} style={{ background: "none", border: `1px dashed ${T.border}`, borderRadius: 10, padding: "10px 16px", color: T.muted, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }} type="button">
+              + Add session
+            </button>
+            <button
+              onClick={save}
+              disabled={saving || !dirty}
+              style={{
+                background: dirty ? T.accent : T.border, color: dirty ? T.bg : T.muted,
+                border: "none", borderRadius: 10, padding: "10px 20px",
+                fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
+                cursor: dirty ? "pointer" : "default",
+              }}
+              type="button"
+            >
+              {saving ? "SAVING…" : dirty ? "SAVE DAY" : "SAVED"}
+            </button>
+            <button onClick={() => copyForward(1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">→ Tomorrow</button>
+            <button onClick={() => copyForward(6)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">→ Next 6 days</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
    Meal Planner — coach plans meals per date (month ahead) with batch copy.
    Sources: athlete's logged history, custom foods DB, OpenFoodFacts.
 ────────────────────────────────────────────────────────────────────────────── */
@@ -2389,9 +2626,13 @@ function WorkoutViewer({ athleteId, token }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Measurements Viewer — body measurements logged by the athlete or coach.
 ────────────────────────────────────────────────────────────────────────────── */
+// Every possible tape site — the viewer only renders the ones that have data,
+// so male and female athletes each show their own set automatically.
 const M_SITES = [
   { k: "waist", label: "Waist" },
   { k: "hips", label: "Hips" },
+  { k: "bust", label: "Bust" },
+  { k: "underbust", label: "Under bust" },
   { k: "chest", label: "Chest" },
   { k: "thigh", label: "Thigh" },
   { k: "arm", label: "Arm" },
@@ -3503,44 +3744,409 @@ function CoachMessaging({ athleteId, athleteName, token }) {
 /* ─────────────────────────────────────────────────────────────────────────────
    Broadcast Modal — send message to all athletes
 ────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Signups Modal — self-registered accounts that aren't on anybody's roster.
+
+   Anyone can create an account in the app, so people arrive before they're
+   coached. This lists them (newest useful first) and claims one onto this
+   coach's roster in a single click. Everything the person already logged —
+   food, weight, wellbeing — stays attached to their account, so claiming is
+   purely additive.
+────────────────────────────────────────────────────────────────────────────── */
+function SignupsModal({ token, onClose, onClaimed }) {
+  const [scope, setScope] = useState("unattached");  // unattached | all
+  const [q, setQ] = useState("");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [claiming, setClaiming] = useState(null);
+  const [err, setErr] = useState("");
+
+  const load = async () => {
+    setLoading(true); setErr("");
+    try {
+      const qs = `?scope=${scope}&limit=300${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ""}`;
+      const data = await apiFetch(`/users/directory${qs}`, token);
+      setRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      setErr(e.message || "Could not load signups");
+      setRows([]);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const t = setTimeout(() => { if (!cancelled) load(); }, q ? 250 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, q, token]);
+
+  const claim = async (u) => {
+    if (claiming) return;
+    setClaiming(u.id);
+    try {
+      await apiFetch(`/users/${u.id}/claim`, token, { method: "POST" });
+      setRows((prev) => prev.filter((r) => r.id !== u.id));
+      onClaimed?.();
+    } catch (e) {
+      alert(e.message || "Could not add that account to your roster");
+    }
+    setClaiming(null);
+  };
+
+  const fmtDate = (iso) => {
+    if (!iso) return "";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+  };
+
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, background: "#000000d0", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div style={{ width: "100%", maxWidth: 680, maxHeight: "90vh", display: "flex", flexDirection: "column", background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22, padding: 24, animation: "fadeUp .2s ease" }}>
+        <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text, marginBottom: 6 }}>
+          APP SIGNUPS
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16, lineHeight: 1.6 }}>
+          People who created their own account in the app. Adding one to your roster keeps
+          everything they've already logged and unlocks their plan, check-ins and programming.
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          {[
+            { key: "unattached", label: "No coach yet" },
+            { key: "all", label: "All accounts" },
+          ].map((t) => {
+            const on = scope === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setScope(t.key)}
+                style={{
+                  background: on ? `${T.accent}18` : T.surface,
+                  border: `1px solid ${on ? T.accent : T.border}`,
+                  color: on ? T.accent : T.text,
+                  borderRadius: 10, padding: "8px 14px",
+                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >{t.label}</button>
+            );
+          })}
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search name or email…"
+            style={{
+              flex: 1, background: T.surface, border: `1px solid ${T.border}`, borderRadius: 10,
+              padding: "8px 12px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none",
+            }}
+          />
+        </div>
+
+        {err && (
+          <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "10px 12px", color: T.danger, fontSize: 12, marginBottom: 10 }}>
+            {err}
+          </div>
+        )}
+
+        <div style={{ flex: 1, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 12, background: T.bg, minHeight: 160 }}>
+          {loading && (
+            <div style={{ padding: 20, fontFamily: "DM Sans", fontSize: 12, color: T.muted }}>Loading…</div>
+          )}
+          {!loading && rows.length === 0 && (
+            <div style={{ padding: 24, fontFamily: "DM Sans", fontSize: 12, color: T.muted, textAlign: "center", lineHeight: 1.6 }}>
+              {scope === "unattached"
+                ? "No unclaimed signups right now."
+                : "No accounts matched that search."}
+            </div>
+          )}
+          {!loading && rows.map((u) => (
+            <div
+              key={u.id}
+              style={{
+                display: "flex", alignItems: "center", gap: 12,
+                padding: "11px 14px", borderBottom: `1px solid ${T.border}55`,
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 13, color: T.text, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {u.name}
+                  {u.signupSource === "self" && (
+                    <span style={{ marginLeft: 8, fontFamily: "DM Sans", fontSize: 9, color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 5, padding: "1px 5px", letterSpacing: 0.5 }}>
+                      SELF SIGNUP
+                    </span>
+                  )}
+                  {u.marketingOptIn && (
+                    <span style={{ marginLeft: 6, fontSize: 10 }} title="Opted in to tips and updates">✉️</span>
+                  )}
+                </div>
+                <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {u.email}{u.createdAt ? ` · joined ${fmtDate(u.createdAt)}` : ""}
+                </div>
+              </div>
+
+              {u.coachId ? (
+                <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen, flexShrink: 0 }}>
+                  {u.coachName || "Coached"}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => claim(u)}
+                  disabled={claiming === u.id}
+                  style={{
+                    background: claiming === u.id ? T.border : T.accent,
+                    color: claiming === u.id ? T.muted : T.bg,
+                    border: "none", borderRadius: 9, padding: "7px 12px",
+                    fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.2,
+                    cursor: claiming === u.id ? "default" : "pointer", flexShrink: 0,
+                  }}
+                >
+                  {claiming === u.id ? "ADDING…" : "+ MY ROSTER"}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <button onClick={onClose} type="button" style={{
+            flex: 1, background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: 11,
+            color: T.muted, fontFamily: "DM Sans", fontSize: 13, cursor: "pointer",
+          }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BroadcastModal({ token, athleteCount, onClose, endpoint, label }) {
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
-  const apiPath = endpoint || "/messages/broadcast";
-  const desc = label || `Send to all ${athleteCount} athletes on your roster`;
-  const btnLabel = label ? "SEND TO ALL CLIENTS" : "BROADCAST TO ALL";
+  const [sentCount, setSentCount] = useState(0);
+
+  // ── Audience ──────────────────────────────────────────────────────────────
+  // "clients"  → the people on my roster
+  // "coached"  → everyone who has a coach (any coach)
+  // "all"      → everyone with an account, self-signups included
+  // "selected" → specific people I pick from the directory
+  const [audience, setAudience] = useState("clients");
+  const [counts, setCounts] = useState(null);
+
+  // Directory, loaded only when picking individuals.
+  const [dirQuery, setDirQuery] = useState("");
+  const [dirRows, setDirRows] = useState([]);
+  const [dirLoading, setDirLoading] = useState(false);
+  const [picked, setPicked] = useState(() => new Set());
+
+  const isAdminAll = endpoint === "/messages/broadcast-all";
+  const apiPath = isAdminAll ? endpoint : "/messages/broadcast";
+
+  useEffect(() => {
+    if (isAdminAll) return;
+    let cancelled = false;
+    apiFetch("/messages/audience-counts", token)
+      .then((c) => { if (!cancelled) setCounts(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token, isAdminAll]);
+
+  // Search the directory (debounced) while the "specific people" tab is open.
+  useEffect(() => {
+    if (audience !== "selected" || isAdminAll) return;
+    let cancelled = false;
+    setDirLoading(true);
+    const t = setTimeout(() => {
+      const q = dirQuery.trim() ? `?q=${encodeURIComponent(dirQuery.trim())}&limit=100` : "?limit=100";
+      apiFetch(`/users/directory${q}`, token)
+        .then((rows) => { if (!cancelled) setDirRows(Array.isArray(rows) ? rows : []); })
+        .catch(() => { if (!cancelled) setDirRows([]); })
+        .finally(() => { if (!cancelled) setDirLoading(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [audience, dirQuery, token, isAdminAll]);
+
+  const AUDIENCES = [
+    { key: "clients", label: "My clients", count: counts?.clients, hint: "The people on your roster" },
+    { key: "coached", label: "All coached", count: counts?.coached, hint: "Everyone who has a coach, any coach" },
+    { key: "all", label: "Everyone", count: counts?.all, hint: "Every account, including self-signups with no coach" },
+    { key: "selected", label: "Specific people", count: picked.size, hint: "Pick names from the directory" },
+  ];
+
+  const togglePick = (id) => {
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const audienceSize =
+    audience === "selected" ? picked.size
+    : audience === "clients" ? (counts?.clients ?? athleteCount ?? 0)
+    : audience === "coached" ? (counts?.coached ?? 0)
+    : (counts?.all ?? 0);
+
+  const canSend = !!content.trim() && !sending && (isAdminAll || audienceSize > 0);
 
   const send = async () => {
-    if (!content.trim() || sending) return;
+    if (!canSend) return;
     setSending(true);
     try {
-      await apiFetch(apiPath, token, {
-        method: "POST",
-        body: JSON.stringify({ content: content.trim() }),
-      });
+      const body = isAdminAll
+        ? { content: content.trim() }
+        : {
+            content: content.trim(),
+            audience,
+            recipientIds: audience === "selected" ? Array.from(picked) : undefined,
+          };
+      const res = await apiFetch(apiPath, token, { method: "POST", body: JSON.stringify(body) });
+      setSentCount(Number(res?.sent) || audienceSize);
       setSent(true);
-      setTimeout(() => onClose(), 1500);
+      setTimeout(() => onClose(), 1800);
     } catch (e) { alert(e.message); }
     setSending(false);
   };
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#000000d0", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-      onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div style={{ width: "100%", maxWidth: 520, background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22, padding: 24, animation: "fadeUp .2s ease" }}>
+      onClick={(e) => e.target === e.currentTarget && !sending && onClose()}>
+      <div style={{ width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22, padding: 24, animation: "fadeUp .2s ease" }}>
         <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text, marginBottom: 6 }}>
           BROADCAST MESSAGE
         </div>
         <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 16 }}>
-          {desc}
+          {isAdminAll
+            ? (label || "Send to every athlete across all coaches")
+            : "Choose who hears from you, then write the message."}
         </div>
+
         {sent ? (
           <div style={{ background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 12, padding: 18, color: T.coachGreen, fontFamily: "DM Sans", fontSize: 13, textAlign: "center" }}>
-            Message sent successfully
+            Sent to {sentCount} {sentCount === 1 ? "person" : "people"}
           </div>
         ) : (
           <>
+            {/* Audience selector (not shown for the admin send-to-everyone route) */}
+            {!isAdminAll && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>
+                  Send to
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {AUDIENCES.map((a) => {
+                    const on = audience === a.key;
+                    return (
+                      <button
+                        key={a.key}
+                        type="button"
+                        onClick={() => setAudience(a.key)}
+                        style={{
+                          textAlign: "left",
+                          background: on ? `${T.accent}18` : T.surface,
+                          border: `1px solid ${on ? T.accent : T.border}`,
+                          borderRadius: 12,
+                          padding: "10px 12px",
+                          cursor: "pointer",
+                          transition: "all .15s",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                          <span style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: on ? T.accent : T.text }}>
+                            {a.label}
+                          </span>
+                          {typeof a.count === "number" && (
+                            <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>
+                              {a.count}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, marginTop: 3, lineHeight: 1.4 }}>
+                          {a.hint}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Individual picker */}
+                {audience === "selected" && (
+                  <div style={{ marginTop: 12, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" }}>
+                    <input
+                      value={dirQuery}
+                      onChange={(e) => setDirQuery(e.target.value)}
+                      placeholder="Search by name or email…"
+                      style={{
+                        width: "100%", background: T.surface, border: "none",
+                        borderBottom: `1px solid ${T.border}`, padding: "10px 12px",
+                        color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none",
+                      }}
+                    />
+                    <div style={{ maxHeight: 210, overflowY: "auto", background: T.bg }}>
+                      {dirLoading && (
+                        <div style={{ padding: 14, fontFamily: "DM Sans", fontSize: 11, color: T.muted }}>Searching…</div>
+                      )}
+                      {!dirLoading && dirRows.length === 0 && (
+                        <div style={{ padding: 14, fontFamily: "DM Sans", fontSize: 11, color: T.muted }}>
+                          No accounts matched.
+                        </div>
+                      )}
+                      {!dirLoading && dirRows.map((u) => {
+                        const on = picked.has(u.id);
+                        return (
+                          <div
+                            key={u.id}
+                            onClick={() => togglePick(u.id)}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 10,
+                              padding: "9px 12px", cursor: "pointer",
+                              borderBottom: `1px solid ${T.border}55`,
+                              background: on ? `${T.accent}12` : "transparent",
+                            }}
+                          >
+                            <div style={{
+                              width: 16, height: 16, minWidth: 16, borderRadius: 4,
+                              border: `2px solid ${on ? T.accent : T.border}`,
+                              background: on ? T.accent : "transparent",
+                              color: T.bg, fontSize: 11, fontWeight: 700, lineHeight: 1,
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                            }}>{on ? "✓" : ""}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontFamily: "DM Sans", fontSize: 12, color: T.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {u.name}
+                              </div>
+                              <div style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 9, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                {u.email}
+                              </div>
+                            </div>
+                            <div style={{ fontFamily: "DM Sans", fontSize: 9, color: u.coachId ? T.coachGreen : T.muted, flexShrink: 0 }}>
+                              {u.coachName ? u.coachName : "no coach"}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {picked.size > 0 && (
+                      <div style={{ padding: "8px 12px", background: T.surface, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.text }}>
+                          {picked.size} selected
+                        </span>
+                        <button type="button" onClick={() => setPicked(new Set())} style={{
+                          background: "none", border: "none", color: T.muted,
+                          fontFamily: "DM Sans", fontSize: 11, cursor: "pointer", textDecoration: "underline",
+                        }}>clear</button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -3556,12 +4162,14 @@ function BroadcastModal({ token, athleteCount, onClose, endpoint, label }) {
                 flex: 1, background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: 11,
                 color: T.muted, fontFamily: "DM Sans", fontSize: 13, cursor: "pointer",
               }} type="button">Cancel</button>
-              <button onClick={send} disabled={sending || !content.trim()} style={{
-                flex: 2, background: content.trim() ? T.accent : T.border, color: content.trim() ? T.bg : T.muted,
+              <button onClick={send} disabled={!canSend} style={{
+                flex: 2, background: canSend ? T.accent : T.border, color: canSend ? T.bg : T.muted,
                 border: "none", borderRadius: 10, padding: 11,
                 fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5,
-                cursor: content.trim() && !sending ? "pointer" : "default",
-              }} type="button">{sending ? "SENDING…" : btnLabel}</button>
+                cursor: canSend ? "pointer" : "default",
+              }} type="button">
+                {sending ? "SENDING…" : isAdminAll ? "SEND TO EVERYONE" : `SEND TO ${audienceSize}`}
+              </button>
             </div>
           </>
         )}
@@ -3598,7 +4206,12 @@ function BroadcastContentModal({ token, athletes, onClose }) {
   const [type, setType] = useState("youtube");
   const [form, setForm] = useState({ title: "", url: "", category: "General", notes: "" });
   const [selected, setSelected] = useState(() => new Set()); // athlete ids
-  const [sendToAll, setSendToAll] = useState(true);
+  // Audience: "clients" (my roster) | "coached" (anyone with a coach) |
+  // "all" (every account, self-signups included) | "selected" (pick names).
+  // "clients"/"selected" copy the content onto each person; "coached"/"all" are
+  // stored once as a global row the app resolves per user.
+  const [audience, setAudience] = useState("clients");
+  const [counts, setCounts] = useState(null);
   const [sending, setSending] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0, failed: 0 });
   const [result, setResult] = useState(null); // null | { ok, failed }
@@ -3630,8 +4243,23 @@ function BroadcastContentModal({ token, athletes, onClose }) {
   const urlValid =
     type === "youtube" ? !!previewId : looksLikeUrl(form.url);
 
-  const recipients = sendToAll ? athletes.map(a => a.id) : Array.from(selected);
-  const canSend = form.title.trim() && urlValid && recipients.length > 0 && !sending;
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch("/messages/audience-counts", token)
+      .then((c) => { if (!cancelled) setCounts(c); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token]);
+
+  const isGlobal = audience === "all" || audience === "coached";
+  const recipients = audience === "clients" ? athletes.map(a => a.id)
+                   : audience === "selected" ? Array.from(selected)
+                   : [];
+  const audienceSize = audience === "clients" ? athletes.length
+                     : audience === "selected" ? selected.size
+                     : audience === "coached" ? (counts?.coached ?? 0)
+                     : (counts?.all ?? 0);
+  const canSend = !!form.title.trim() && urlValid && audienceSize > 0 && !sending;
 
   const toggleAthlete = (id) => {
     setSelected(prev => {
@@ -3647,15 +4275,42 @@ function BroadcastContentModal({ token, athletes, onClose }) {
     if (!urlValid) {
       setError(type === "youtube" ? "Paste a valid YouTube URL" : "Paste a valid http(s) URL"); return;
     }
-    if (recipients.length === 0) { setError("Select at least one client (or choose ‘All clients’)"); return; }
+    if (audienceSize === 0) { setError("Nobody is in that audience — pick another one."); return; }
 
     setSending(true);
-    setProgress({ done: 0, total: recipients.length, failed: 0 });
 
     // Fold the content type into category so the client app can distinguish
     // videos / pdfs / links without a backend schema change.
     const encodedCategory = `type:${type}|${form.category}`;
 
+    // "Everyone" / "All coached" are stored once as a global row, so the
+    // content reaches accounts that aren't on anybody's roster and doesn't
+    // need re-copying when someone new signs up.
+    if (isGlobal) {
+      setProgress({ done: 0, total: 1, failed: 0 });
+      try {
+        const res = await apiFetch(`/coach-content/broadcast`, token, {
+          method: "POST",
+          body: JSON.stringify({
+            title: form.title.trim(),
+            url: form.url.trim(),
+            category: encodedCategory,
+            notes: form.notes.trim() || null,
+            audience,
+          }),
+        });
+        setProgress({ done: 1, total: 1, failed: 0 });
+        setSending(false);
+        setResult({ ok: Number(res?.reached) || audienceSize, failed: 0 });
+        setTimeout(() => onClose(), 1600);
+      } catch (e) {
+        setSending(false);
+        setError(e.message || "Could not share that content");
+      }
+      return;
+    }
+
+    setProgress({ done: 0, total: recipients.length, failed: 0 });
     let ok = 0, failed = 0;
     for (const athleteId of recipients) {
       try {
@@ -3792,35 +4447,59 @@ function BroadcastContentModal({ token, athletes, onClose }) {
 
             {/* Recipients */}
             <label style={labelStyle}>Recipients</label>
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <button
-                onClick={() => setSendToAll(true)}
-                type="button"
-                style={{
-                  flex: 1,
-                  background: sendToAll ? T.coachGreen : T.surface,
-                  color: sendToAll ? T.bg : T.text,
-                  border: `1px solid ${sendToAll ? T.coachGreen : T.border}`,
-                  borderRadius: 10, padding: "10px 8px",
-                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                }}
-              >All clients ({athletes.length})</button>
-              <button
-                onClick={() => setSendToAll(false)}
-                type="button"
-                style={{
-                  flex: 1,
-                  background: !sendToAll ? T.accent : T.surface,
-                  color: !sendToAll ? T.bg : T.text,
-                  border: `1px solid ${!sendToAll ? T.accent : T.border}`,
-                  borderRadius: 10, padding: "10px 8px",
-                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                }}
-              >Specific clients{!sendToAll && selected.size > 0 ? ` (${selected.size})` : ""}</button>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
+              {[
+                { key: "clients",  label: "My clients",      count: athletes.length,    hint: "Your roster" },
+                { key: "coached",  label: "All coached",     count: counts?.coached,    hint: "Everyone with a coach" },
+                { key: "all",      label: "Everyone",        count: counts?.all,        hint: "Every account, coach or not" },
+                { key: "selected", label: "Specific people", count: selected.size,      hint: "Pick from your roster" },
+              ].map((a) => {
+                const on = audience === a.key;
+                return (
+                  <button
+                    key={a.key}
+                    onClick={() => setAudience(a.key)}
+                    type="button"
+                    style={{
+                      textAlign: "left",
+                      background: on ? `${T.accent}18` : T.surface,
+                      color: T.text,
+                      border: `1px solid ${on ? T.accent : T.border}`,
+                      borderRadius: 10, padding: "10px 12px",
+                      cursor: "pointer", transition: "all .15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span style={{ fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, color: on ? T.accent : T.text }}>
+                        {a.label}
+                      </span>
+                      {typeof a.count === "number" && (
+                        <span style={{ fontFamily: "JetBrains Mono, monospace", fontSize: 10, color: T.muted }}>
+                          {a.count}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, marginTop: 3 }}>
+                      {a.hint}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
 
+            {isGlobal && (
+              <div style={{
+                background: `${T.accent}10`, border: `1px solid ${T.accent}33`, borderRadius: 10,
+                padding: "10px 12px", marginBottom: 12,
+                fontFamily: "DM Sans", fontSize: 11, color: T.muted, lineHeight: 1.6,
+              }}>
+                Stored once and shown to everyone in this audience — including people who sign
+                up after today. Nothing is copied onto individual rosters.
+              </div>
+            )}
+
             {/* Specific-client picker */}
-            {!sendToAll && (
+            {audience === "selected" && (
               <div style={{ maxHeight: 200, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 10, padding: 8, marginBottom: 14 }}>
                 {athletes.length === 0 ? (
                   <div style={{ color: T.muted, fontSize: 12, textAlign: "center", padding: 12 }}>No clients on your roster yet.</div>
@@ -3860,7 +4539,7 @@ function BroadcastContentModal({ token, athletes, onClose }) {
                 fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 1.5,
                 cursor: canSend ? "pointer" : "default",
               }} type="button">
-                {sending ? "SENDING…" : sendToAll ? `SEND TO ALL ${athletes.length}` : `SEND TO ${recipients.length || 0}`}
+                {sending ? "SENDING…" : `SEND TO ${audienceSize}`}
               </button>
             </div>
           </>
@@ -4331,6 +5010,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [resending, setResending] = useState(false);
   const [confirmResend, setConfirmResend] = useState(false);
   const [isActive, setIsActive] = useState(athlete.active !== false);
+  const [progEnabled, setProgEnabled] = useState(!!athlete.programmingEnabled);
   const [showTransfer, setShowTransfer] = useState(false);
   const [coachList, setCoachList] = useState([]);
   const [transferTo, setTransferTo] = useState("");
@@ -4409,6 +5089,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "nutrition", label: "NUTRITION" },
     { id: "macroplan", label: "MACRO PLAN" },
     { id: "mealplanner", label: "MEAL PLANNER" },
+    ...(progEnabled ? [{ id: "programming", label: "PROGRAMMING" }] : []),
     { id: "messages", label: "MESSAGES" },
     { id: "foodlog", label: "FOOD LOG" },
     { id: "checkins", label: "CHECK-INS" },
@@ -4453,6 +5134,28 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
         </div>
 
         {/* Delete athlete button */}
+        {/* Programming on/off for this client */}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "DM Sans", fontSize: 11, color: progEnabled ? T.accent : T.muted, cursor: "pointer", border: `1px solid ${progEnabled ? T.accent : T.border}`, borderRadius: 8, padding: "6px 12px" }}>
+          <input
+            type="checkbox"
+            checked={progEnabled}
+            onChange={async (e) => {
+              const next = e.target.checked;
+              setProgEnabled(next);
+              try {
+                await apiFetch(`/athletes/${athlete.id}/programming-enabled`, token, {
+                  method: "PATCH",
+                  body: JSON.stringify({ enabled: next }),
+                });
+              } catch (err) {
+                setProgEnabled(!next);
+                alert(err.message || "Could not update programming setting");
+              }
+            }}
+          />
+          🏋 Programming
+        </label>
+
         {/* Pause / Unpause */}
         <button
           onClick={async () => {
@@ -4881,6 +5584,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       {tab === "mealplanner" && (
         <MealPlannerTab athleteId={athlete.id} token={token} />
       )}
+
+      {tab === "programming" && (
+        <ProgrammingTab athleteId={athlete.id} token={token} />
+      )}
     </div>
   );
 }
@@ -5044,6 +5751,7 @@ export default function CoachCMS() {
   const [creating, setCreating] = useState(false);
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showBroadcastContent, setShowBroadcastContent] = useState(false);
+  const [showSignups, setShowSignups] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -5088,6 +5796,7 @@ export default function CoachCMS() {
           email: a.email,
           sport: a.sport || "—",
           active: a.active !== false,
+          programmingEnabled: !!a.programming_enabled,
           avatar: initialsOf(a.name),
           avatarColor: randomAvatarColor(),
           macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
@@ -5289,7 +5998,6 @@ export default function CoachCMS() {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={() => setShowBroadcast(true)}
-                  disabled={athletes.length === 0}
                   style={{
                     background: "none",
                     border: `1px solid ${T.accent}44`,
@@ -5299,8 +6007,7 @@ export default function CoachCMS() {
                     fontFamily: "Bebas Neue, system-ui",
                     fontSize: 14,
                     letterSpacing: 1.5,
-                    cursor: athletes.length > 0 ? "pointer" : "default",
-                    opacity: athletes.length > 0 ? 1 : 0.5,
+                    cursor: "pointer",
                   }}
                   type="button"
                 >
@@ -5308,7 +6015,6 @@ export default function CoachCMS() {
                 </button>
                 <button
                   onClick={() => setShowBroadcastContent(true)}
-                  disabled={athletes.length === 0}
                   style={{
                     background: "none",
                     border: `1px solid ${T.accent}44`,
@@ -5318,13 +6024,30 @@ export default function CoachCMS() {
                     fontFamily: "Bebas Neue, system-ui",
                     fontSize: 14,
                     letterSpacing: 1.5,
-                    cursor: athletes.length > 0 ? "pointer" : "default",
-                    opacity: athletes.length > 0 ? 1 : 0.5,
+                    cursor: "pointer",
                   }}
                   type="button"
                 >
                   📤 SEND CONTENT
                 </button>
+              <button
+                onClick={() => setShowSignups(true)}
+                style={{
+                  background: "none",
+                  color: T.accent,
+                  border: `1px solid ${T.accent}44`,
+                  borderRadius: 10,
+                  padding: "10px 14px",
+                  fontFamily: "Bebas Neue, system-ui",
+                  fontSize: 14,
+                  letterSpacing: 1.5,
+                  cursor: "pointer",
+                }}
+                type="button"
+                title="People who signed up in the app themselves"
+              >
+                👤 SIGNUPS
+              </button>
               <button
                 onClick={() => setShowBatch(true)}
                 style={{
@@ -5498,6 +6221,14 @@ export default function CoachCMS() {
           token={token}
           athletes={athletes}
           onClose={() => setShowBroadcastContent(false)}
+        />
+      )}
+
+      {showSignups && (
+        <SignupsModal
+          token={token}
+          onClose={() => setShowSignups(false)}
+          onClaimed={() => setRosterRefresh((n) => n + 1)}
         />
       )}
     </div>

@@ -46,6 +46,94 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAMAAADD
 /* ─────────────────────────────────────────────────────────────────────────────
    Helpers
 ────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   BENCHMARKS — shared helpers (kept identical in App.jsx and CoachCMS.jsx)
+
+   Values are stored as plain numbers, except time-based tests which are stored
+   as SECONDS. So a 2k row of 7:12 is 432, and a back squat of 142.5kg is 142.5.
+
+   Percentage programming: a coach writes a token in the session body and it
+   resolves against that athlete's current best when it's displayed —
+
+       5 x 3 @ {80% Back Squat 1RM}
+    →  5 x 3 @ 80% Back Squat 1RM (115kg)
+
+   The name match is forgiving: exact first, then prefix, then substring, so
+   "{80% Back Squat}" finds "Back Squat 1RM". Percentages of a time are a
+   percentage of the time itself, which is how row intervals get prescribed —
+   {105% 2k Row} off a 7:04 best gives 7:25, i.e. 5% slower than 2k pace.
+   Loads in kg/lb round to the nearest 2.5 so the number is loadable.
+────────────────────────────────────────────────────────────────────────────── */
+const BENCH_UNITS = [
+  { key: "kg", label: "kg (weight)" },
+  { key: "lb", label: "lb (weight)" },
+  { key: "time", label: "time (m:ss)" },
+  { key: "reps", label: "reps" },
+  { key: "m", label: "metres" },
+  { key: "cm", label: "cm" },
+  { key: "watts", label: "watts" },
+];
+
+// 432 → "7:12".  Hours appear only when the result needs them.
+function fmtBenchValue(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  if (unit === "time") {
+    const total = Math.round(n);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+      : `${m}:${String(s).padStart(2, "0")}`;
+  }
+  const r = Math.round(n * 10) / 10;
+  const txt = Number.isInteger(r) ? String(r) : r.toFixed(1);
+  return unit === "reps" ? txt : `${txt}${unit}`;
+}
+
+// "7:12" → 432. Also accepts "7.12", "432", and "1:02:30".
+function parseBenchValue(input, unit) {
+  const raw = String(input ?? "").trim();
+  if (!raw) return NaN;
+  if (unit !== "time") return parseFloat(raw.replace(/[^\d.]/g, ""));
+  const parts = raw.replace(/\./g, ":").split(":").map((p) => parseInt(p, 10));
+  if (parts.some((p) => !Number.isFinite(p))) return NaN;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] * 3600 + parts[1] * 60 + parts[2];
+}
+
+const BENCH_PCT_TOKEN = /\{\s*(\d{1,3}(?:\.\d+)?)\s*%\s*([^}]+?)\s*\}/g;
+
+// Expand every {N% Benchmark} token in a programming body.
+// `bests` is the map returned by GET /benchmarks/:athleteId.
+function resolveBenchTokens(text, bests) {
+  if (!text) return text || "";
+  const list = Object.values(bests || {});
+  return String(text).replace(BENCH_PCT_TOKEN, (_full, pctStr, nameRaw) => {
+    const pct = parseFloat(pctStr);
+    const want = nameRaw.trim().toLowerCase();
+    const hit =
+      list.find((b) => String(b.name).toLowerCase() === want) ||
+      list.find((b) => String(b.name).toLowerCase().startsWith(want)) ||
+      list.find((b) => String(b.name).toLowerCase().includes(want));
+    if (!hit || !Number.isFinite(Number(hit.best))) {
+      return `${pctStr}% ${nameRaw.trim()} (no result logged yet)`;
+    }
+    let v = Number(hit.best) * (pct / 100);
+    if (hit.unit === "kg" || hit.unit === "lb") v = Math.round(v / 2.5) * 2.5;
+    else if (hit.unit === "time") v = Math.round(v);
+    else v = Math.round(v * 10) / 10;
+    return `${pctStr}% ${hit.name} (${fmtBenchValue(v, hit.unit)})`;
+  });
+}
+
+// Does this text contain any percentage token at all?
+function hasBenchTokens(text) {
+  return !!text && /\{\s*\d{1,3}(?:\.\d+)?\s*%[^}]+\}/.test(String(text));
+}
+
 async function apiFetch(path, token, opts = {}) {
   const headers = {
     "Content-Type": "application/json",
@@ -1915,6 +2003,454 @@ function AthleteCheckInManager({ athleteId, token }) {
    coach types the session however they like and it reaches the athlete as
    written. Days with programming are marked on the strip.
 ────────────────────────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Benchmarks Manager — 1RMs, row times and any test the coach invents.
+
+   Results are kept as full history, so progress is charted over time rather
+   than only showing a current number. These are also what percentage-based
+   programming resolves against: with a 142.5kg squat on file, writing
+   "{80% Back Squat}" in a session shows the athlete 115kg.
+────────────────────────────────────────────────────────────────────────────── */
+function BenchmarksManager({ athleteId, token }) {
+  const todayISO = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  })();
+  const uk = (iso) => String(iso).split("-").reverse().join("/");
+
+  const [types, setTypes] = useState([]);
+  const [results, setResults] = useState([]);
+  const [bests, setBests] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [sel, setSel] = useState(null);          // selected benchmark id
+  const [err, setErr] = useState("");
+
+  // Add-result form
+  const [val, setVal] = useState("");
+  const [date, setDate] = useState(todayISO);
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  // New-benchmark form
+  const [showNew, setShowNew] = useState(false);
+  const [nbName, setNbName] = useState("");
+  const [nbCat, setNbCat] = useState("General");
+  const [nbUnit, setNbUnit] = useState("kg");
+  const [nbSaving, setNbSaving] = useState(false);
+
+  const load = async () => {
+    if (!athleteId || !token) return;
+    try {
+      const d = await apiFetch(`/benchmarks/${athleteId}`, token);
+      setTypes(Array.isArray(d?.types) ? d.types : []);
+      setResults(Array.isArray(d?.results) ? d.results : []);
+      setBests(d?.bests || {});
+      setErr("");
+    } catch (e) {
+      setErr(e.message || "Could not load benchmarks");
+    }
+    setLoading(false);
+  };
+  useEffect(() => { setLoading(true); load(); /* eslint-disable-next-line */ }, [athleteId, token]);
+
+  const selType = types.find((t) => t.id === sel) || null;
+  const selResults = sel ? results.filter((r) => r.benchmarkId === sel) : [];
+
+  const addResult = async () => {
+    setMsg("");
+    if (!selType) { setMsg("Pick a benchmark first."); return; }
+    const parsed = parseBenchValue(val, selType.unit);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setMsg(selType.unit === "time" ? "Enter a time like 7:12." : "Enter a number greater than zero.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await apiFetch(`/benchmarks/${athleteId}`, token, {
+        method: "POST",
+        body: JSON.stringify({ benchmarkId: sel, value: parsed, date, notes: notes.trim() || null }),
+      });
+      setVal(""); setNotes("");
+      await load();
+      setMsg(`Logged ${fmtBenchValue(parsed, selType.unit)} on ${uk(date)}.`);
+      setTimeout(() => setMsg(""), 2600);
+    } catch (e) { setMsg(e.message || "Could not save"); }
+    setSaving(false);
+  };
+
+  const delResult = async (id) => {
+    try {
+      await apiFetch(`/benchmarks/${athleteId}/${id}`, token, { method: "DELETE" });
+      setResults((p) => p.filter((r) => r.id !== id));
+      await load();
+    } catch (e) { setMsg(e.message || "Could not delete"); }
+  };
+
+  const createBenchmark = async () => {
+    if (nbName.trim().length < 2) return;
+    setNbSaving(true);
+    try {
+      const made = await apiFetch(`/benchmark-types`, token, {
+        method: "POST",
+        body: JSON.stringify({ name: nbName.trim(), category: nbCat.trim() || "General", unit: nbUnit }),
+      });
+      setNbName(""); setShowNew(false);
+      await load();
+      setSel(made.id);
+    } catch (e) { setMsg(e.message || "Could not create benchmark"); }
+    setNbSaving(false);
+  };
+
+  const archiveBenchmark = async (t) => {
+    if (!window.confirm(`Remove "${t.name}" from the benchmark list? Results already logged are kept.`)) return;
+    try {
+      await apiFetch(`/benchmark-types/${t.id}`, token, { method: "DELETE" });
+      if (sel === t.id) setSel(null);
+      await load();
+    } catch (e) { setMsg(e.message || "Could not remove"); }
+  };
+
+  // Group the picker by category so a long list stays navigable.
+  const byCategory = types.reduce((acc, t) => {
+    const k = t.category || "General";
+    (acc[k] = acc[k] || []).push(t);
+    return acc;
+  }, {});
+
+  const chartData = selResults
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((r) => ({ date: r.date, value: r.value }));
+
+  const label = (v) => (selType ? fmtBenchValue(v, selType.unit) : String(v));
+  const withResults = Object.values(bests);
+
+  if (loading) {
+    return <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans", padding: 8 }}>Loading benchmarks…</div>;
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {err && (
+        <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "10px 12px", color: T.danger, fontSize: 12 }}>
+          {err}
+        </div>
+      )}
+
+      {/* Current bests */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text }}>
+            CURRENT BESTS
+          </div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>
+            {withResults.length} of {types.length} tested
+          </div>
+        </div>
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14, lineHeight: 1.6 }}>
+          These are what percentage programming reads. Write <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>{"{80% Back Squat}"}</code> in
+          a session and the athlete sees the actual load.
+        </div>
+
+        {withResults.length === 0 ? (
+          <div style={{ color: T.muted, fontSize: 12, fontFamily: "DM Sans" }}>
+            Nothing logged yet. Pick a benchmark below and add a result.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 10 }}>
+            {withResults
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((b) => {
+                // Improving means moving the right way for this test, which is
+                // downward for a time and upward for a load.
+                const atBest = b.latest === b.best;
+                return (
+                  <button
+                    key={b.benchmarkId}
+                    type="button"
+                    onClick={() => setSel(b.benchmarkId)}
+                    style={{
+                      textAlign: "left",
+                      background: sel === b.benchmarkId ? `${T.accent}18` : T.surface,
+                      border: `1px solid ${sel === b.benchmarkId ? T.accent : T.border}`,
+                      borderRadius: 12, padding: "10px 12px", cursor: "pointer",
+                    }}
+                  >
+                    <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: 0.6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                      {b.name}
+                    </div>
+                    <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, color: T.text, letterSpacing: 1, lineHeight: 1.2 }}>
+                      {fmtBenchValue(b.best, b.unit)}
+                    </div>
+                    <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: atBest ? T.coachGreen : T.muted }}>
+                      {atBest ? `PB · ${uk(b.bestDate)}` : `now ${fmtBenchValue(b.latest, b.unit)} · ${uk(b.latestDate)}`}
+                    </div>
+                  </button>
+                );
+              })}
+          </div>
+        )}
+      </div>
+
+      {/* Benchmark picker */}
+      <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text }}>
+            BENCHMARKS &amp; TESTS
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowNew((v) => !v)}
+            style={{
+              background: showNew ? T.surface : "none", border: `1px solid ${T.accent}44`, color: T.accent,
+              borderRadius: 9, padding: "7px 12px", fontFamily: "Bebas Neue, system-ui",
+              fontSize: 13, letterSpacing: 1.2, cursor: "pointer",
+            }}
+          >
+            {showNew ? "CANCEL" : "+ NEW TEST"}
+          </button>
+        </div>
+
+        {showNew && (
+          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 8, marginBottom: 10 }}>
+              <input
+                value={nbName}
+                onChange={(e) => setNbName(e.target.value)}
+                placeholder="e.g. Weighted Pull-Up 1RM"
+                style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+              />
+              <input
+                value={nbCat}
+                onChange={(e) => setNbCat(e.target.value)}
+                placeholder="Category"
+                style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+              />
+              <select
+                value={nbUnit}
+                onChange={(e) => setNbUnit(e.target.value)}
+                style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+              >
+                {BENCH_UNITS.map((u) => <option key={u.key} value={u.key}>{u.label}</option>)}
+              </select>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={createBenchmark}
+                disabled={nbSaving || nbName.trim().length < 2}
+                style={{
+                  background: nbName.trim().length >= 2 ? T.accent : T.border,
+                  color: nbName.trim().length >= 2 ? T.bg : T.muted,
+                  border: "none", borderRadius: 9, padding: "8px 16px",
+                  fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.2,
+                  cursor: nbName.trim().length >= 2 && !nbSaving ? "pointer" : "default",
+                }}
+              >
+                {nbSaving ? "ADDING…" : "ADD BENCHMARK"}
+              </button>
+              <span style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted }}>
+                Times are entered as m:ss and always treated as lower-is-better.
+              </span>
+            </div>
+          </div>
+        )}
+
+        {Object.keys(byCategory).sort().map((cat) => (
+          <div key={cat} style={{ marginBottom: 12 }}>
+            <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6 }}>
+              {cat}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+              {byCategory[cat].map((t) => {
+                const on = sel === t.id;
+                const has = !!bests[String(t.id)];
+                return (
+                  <span key={t.id} style={{ display: "inline-flex", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      onClick={() => setSel(t.id)}
+                      style={{
+                        background: on ? `${T.accent}22` : T.surface,
+                        border: `1px solid ${on ? T.accent : T.border}`,
+                        color: on ? T.accent : has ? T.text : T.muted,
+                        borderRadius: t.builtIn ? 9 : "9px 0 0 9px",
+                        padding: "7px 11px", fontFamily: "DM Sans", fontSize: 11.5,
+                        cursor: "pointer", whiteSpace: "nowrap",
+                      }}
+                    >
+                      {t.name}
+                      {has && <span style={{ marginLeft: 6, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.coachGreen }}>
+                        {fmtBenchValue(bests[String(t.id)].best, t.unit)}
+                      </span>}
+                    </button>
+                    {!t.builtIn && (
+                      <button
+                        type="button"
+                        onClick={() => archiveBenchmark(t)}
+                        title="Remove this test"
+                        style={{
+                          background: T.surface, border: `1px solid ${on ? T.accent : T.border}`, borderLeft: "none",
+                          color: T.muted, borderRadius: "0 9px 9px 0", padding: "7px 8px",
+                          fontSize: 12, lineHeight: 1, cursor: "pointer",
+                        }}
+                      >×</button>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Selected benchmark: log a result + progress over time */}
+      {selType && (
+        <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 16, letterSpacing: 2, color: T.text, marginBottom: 2 }}>
+            {selType.name.toUpperCase()}
+          </div>
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14 }}>
+            {selType.lowerIsBetter ? "Lower is better — the line should trend down." : "Higher is better — the line should trend up."}
+            {" "}Dates are free, so historic results can be backfilled.
+          </div>
+
+          {/* Add a result */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 2fr auto", gap: 8, marginBottom: 6 }}>
+            <input
+              value={val}
+              onChange={(e) => setVal(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addResult()}
+              placeholder={selType.unit === "time" ? "7:12" : selType.unit === "reps" ? "22" : `100${selType.unit}`}
+              style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 13, outline: "none" }}
+            />
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+            />
+            <input
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addResult()}
+              placeholder="Notes (optional)"
+              style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+            />
+            <button
+              type="button"
+              onClick={addResult}
+              disabled={saving}
+              style={{
+                background: T.accent, color: T.bg, border: "none", borderRadius: 9, padding: "9px 18px",
+                fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.2,
+                cursor: saving ? "default" : "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {saving ? "SAVING…" : "LOG RESULT"}
+            </button>
+          </div>
+          {msg && (
+            <div style={{ fontFamily: "DM Sans", fontSize: 11, color: msg.startsWith("Logged") ? T.coachGreen : T.warn, marginBottom: 10 }}>
+              {msg}
+            </div>
+          )}
+
+          {/* Progress chart */}
+          <div style={{ marginTop: 12 }}>
+            <TimeSeriesChart
+              data={chartData}
+              color={selType.lowerIsBetter ? "#4B9FE1" : T.accent}
+              yLabel={selType.name}
+              formatY={label}
+              emptyLabel="No results logged for this benchmark yet."
+            />
+          </div>
+
+          {/* History */}
+          {selResults.length > 0 && (
+            <div style={{ marginTop: 14, border: `1px solid ${T.border}`, borderRadius: 12, overflow: "hidden" }}>
+              {selResults
+                .slice()
+                .sort((a, b) => b.date.localeCompare(a.date))
+                .map((r) => {
+                  const isBest = bests[String(sel)] && r.value === bests[String(sel)].best;
+                  return (
+                    <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderBottom: `1px solid ${T.border}55`, background: isBest ? `${T.coachGreen}0d` : "transparent" }}>
+                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12, color: T.text, minWidth: 74 }}>
+                        {fmtBenchValue(r.value, selType.unit)}
+                      </div>
+                      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, minWidth: 82 }}>{uk(r.date)}</div>
+                      {isBest && (
+                        <span style={{ fontFamily: "DM Sans", fontSize: 9, color: T.coachGreen, border: `1px solid ${T.coachGreen}55`, borderRadius: 5, padding: "1px 5px", letterSpacing: 0.5 }}>PB</span>
+                      )}
+                      <div style={{ flex: 1, fontFamily: "DM Sans", fontSize: 11, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {r.notes || ""}
+                        {r.recordedByName ? <span style={{ opacity: 0.6 }}>{r.notes ? " · " : ""}{r.recordedByName}</span> : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => delResult(r.id)}
+                        style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 14, lineHeight: 1, padding: "0 2px" }}
+                        title="Delete this result"
+                      >×</button>
+                    </div>
+                  );
+                })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Programming — multiple sessions per day, with percentage-based loading,
+   autosave, and CSV import.
+
+   Autosave notes: the editor keeps its own draft while you type, and a save is
+   fired 1.5s after you stop. Two races have to be handled or keystrokes get
+   eaten, so both are guarded explicitly below:
+     1. A completed save updates byDate, whose effect would otherwise reload the
+        editor from the server copy and wipe anything typed since.
+     2. A save that finishes after further edits must not clear the dirty flag,
+        or those later edits never get written.
+   A copy of the draft also goes to localStorage on every change, so a crashed
+   tab or an expired session can be recovered rather than lost.
+────────────────────────────────────────────────────────────────────────────── */
+const PROG_DRAFT_KEY = (athleteId, date) => `nrn_prog_draft_${athleteId}_${date}`;
+
+// Minimal RFC4180 CSV parser — handles quoted fields, embedded commas and
+// embedded newlines, which matter because a session body is multi-line.
+function parseCsv(text) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  const src = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (src[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      row.push(field); field = "";
+    } else if (c === "\n") {
+      row.push(field); field = "";
+      if (row.some((x) => x.trim() !== "")) rows.push(row);
+      row = [];
+    } else field += c;
+  }
+  row.push(field);
+  if (row.some((x) => x.trim() !== "")) rows.push(row);
+  return rows;
+}
+
 function ProgrammingTab({ athleteId, token }) {
   const fmt = (d) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
   const ukLong = (iso) => String(iso).split("-").reverse().join("/");
@@ -1934,6 +2470,29 @@ function ProgrammingTab({ athleteId, token }) {
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(true);
+  const [savedAt, setSavedAt] = useState(null);  // Date of last successful save
+  const [saveErr, setSaveErr] = useState("");
+
+  // Benchmarks, so percentages can be inserted and previewed
+  const [bests, setBests] = useState({});
+
+  // Recoverable local draft, if one is newer than what the server has
+  const [recover, setRecover] = useState(null);  // { sessions, at }
+
+  // CSV import
+  const [showCsv, setShowCsv] = useState(false);
+  const [csvMsg, setCsvMsg] = useState("");
+  const [csvBusy, setCsvBusy] = useState(false);
+
+  // Race guards (see the note above this component)
+  const editSeqRef = useRef(0);
+  const loadedForRef = useRef(null);
+  const dirtyRef = useRef(false);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+
+  // Which textarea last had focus, so a benchmark chip inserts in the right place
+  const taRefs = useRef({});
+  const [focusIdx, setFocusIdx] = useState(0);
 
   const load = async () => {
     try {
@@ -1950,47 +2509,142 @@ function ProgrammingTab({ athleteId, token }) {
     } catch { setByDate({}); }
     setLoading(false);
   };
-  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } }, [athleteId, token, weekOffset]);
-  useEffect(() => { setDraft((byDate[selDate] || []).map((x) => ({ ...x }))); setDirty(false); }, [selDate, byDate]);
+  useEffect(() => { if (athleteId && token) { setLoading(true); load(); } /* eslint-disable-next-line */ }, [athleteId, token, weekOffset]);
+
+  // Benchmark bests for percentage resolution
+  useEffect(() => {
+    if (!athleteId || !token) return;
+    let cancelled = false;
+    apiFetch(`/benchmarks/${athleteId}`, token)
+      .then((d) => { if (!cancelled) setBests(d?.bests || {}); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [athleteId, token]);
+
+  // Load the editor for a day. Guarded so an autosave's own byDate update can't
+  // reload over text typed since (race 1).
+  useEffect(() => {
+    if (loadedForRef.current === selDate && dirtyRef.current) return;
+    const server = (byDate[selDate] || []).map((x) => ({ ...x }));
+    setDraft(server);
+    setDirty(false);
+    loadedForRef.current = selDate;
+
+    // Offer recovery if a local draft differs from what the server holds.
+    try {
+      const raw = localStorage.getItem(PROG_DRAFT_KEY(athleteId, selDate));
+      if (raw) {
+        const saved = JSON.parse(raw);
+        const differs = JSON.stringify(saved?.sessions || []) !== JSON.stringify(server);
+        if (differs && Array.isArray(saved?.sessions) && saved.sessions.some((x) => String(x?.body || "").trim())) {
+          setRecover({ sessions: saved.sessions, at: saved.at });
+        } else {
+          setRecover(null);
+          localStorage.removeItem(PROG_DRAFT_KEY(athleteId, selDate));
+        }
+      } else setRecover(null);
+    } catch { setRecover(null); }
+    /* eslint-disable-next-line */
+  }, [selDate, byDate]);
+
+  const markEdited = () => { editSeqRef.current += 1; setDirty(true); setSaveErr(""); };
 
   const setSession = (i, patch) => {
     setDraft((p) => p.map((sx, idx) => (idx === i ? { ...sx, ...patch } : sx)));
-    setDirty(true);
+    markEdited();
   };
   const addSession = () => {
     setDraft((p) => [...p, { title: p.length === 0 ? "Session" : `Session ${p.length + 1}`, time: "", body: "" }]);
-    setDirty(true);
+    markEdited();
   };
   const removeSession = (i) => {
     setDraft((p) => p.filter((_, idx) => idx !== i));
-    setDirty(true);
+    markEdited();
   };
 
-  const save = async () => {
-    setSaving(true); setMsg("");
+  // Mirror every change into localStorage straight away — this is the copy that
+  // survives a closed tab or an expired token.
+  useEffect(() => {
+    if (!dirty) return;
+    try {
+      localStorage.setItem(
+        PROG_DRAFT_KEY(athleteId, selDate),
+        JSON.stringify({ sessions: draft, at: new Date().toISOString() })
+      );
+    } catch {}
+    /* eslint-disable-next-line */
+  }, [draft, dirty]);
+
+  const doSave = async ({ silent } = {}) => {
+    const startedSeq = editSeqRef.current;
+    const dateAtStart = selDate;
+    setSaving(true);
+    if (!silent) setMsg("");
     try {
       const sessions = draft
         .filter((x) => String(x.body || "").trim())
         .map((x) => ({ title: x.title || "Session", time: x.time || null, body: x.body }));
       await apiFetch(`/programming/${athleteId}`, token, {
         method: "PUT",
-        body: JSON.stringify({ date: selDate, sessions }),
+        body: JSON.stringify({ date: dateAtStart, sessions }),
       });
       setByDate((p) => {
         const n = { ...p };
-        if (sessions.length) n[selDate] = sessions; else delete n[selDate];
+        if (sessions.length) n[dateAtStart] = sessions; else delete n[dateAtStart];
         return n;
       });
-      setDirty(false);
-      setMsg(sessions.length ? `Saved ${sessions.length} session(s).` : "Day cleared.");
-      setTimeout(() => setMsg(""), 2200);
-    } catch (e) { setMsg(e.message || "Could not save"); }
+      setSavedAt(new Date());
+      setSaveErr("");
+      // Only declare it clean if nothing was edited while the save was in
+      // flight (race 2) — otherwise leave it dirty so autosave runs again.
+      if (editSeqRef.current === startedSeq && dateAtStart === selDate) {
+        setDirty(false);
+        try { localStorage.removeItem(PROG_DRAFT_KEY(athleteId, dateAtStart)); } catch {}
+      }
+      if (!silent) {
+        setMsg(sessions.length ? `Saved ${sessions.length} session(s).` : "Day cleared.");
+        setTimeout(() => setMsg(""), 2200);
+      }
+    } catch (e) {
+      // The local draft is deliberately kept on failure.
+      setSaveErr(e.message || "Could not save");
+      if (!silent) setMsg(e.message || "Could not save");
+    }
     setSaving(false);
   };
 
+  // Autosave 1.5s after typing stops.
+  useEffect(() => {
+    if (!dirty || saving) return;
+    const t = setTimeout(() => { doSave({ silent: true }); }, 1500);
+    return () => clearTimeout(t);
+    /* eslint-disable-next-line */
+  }, [dirty, draft, saving]);
+
+  // Last-ditch flush if the tab is closed or backgrounded mid-edit.
+  useEffect(() => {
+    const onHide = () => {
+      if (!dirtyRef.current) return;
+      try {
+        localStorage.setItem(
+          PROG_DRAFT_KEY(athleteId, selDate),
+          JSON.stringify({ sessions: draft, at: new Date().toISOString() })
+        );
+      } catch {}
+    };
+    window.addEventListener("beforeunload", onHide);
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      window.removeEventListener("beforeunload", onHide);
+      document.removeEventListener("visibilitychange", onHide);
+    };
+    /* eslint-disable-next-line */
+  }, [draft, selDate, athleteId]);
+
   const copyForward = async (n) => {
-    if (dirty) { alert("Save this day first, then copy it."); return; }
-    const sessions = byDate[selDate] || [];
+    if (dirty) { await doSave({ silent: true }); }
+    const sessions = draft.filter((x) => String(x.body || "").trim())
+      .map((x) => ({ title: x.title || "Session", time: x.time || null, body: x.body }));
     if (!sessions.length) { alert("Nothing to copy on this day."); return; }
     const days = [...Array(n)].map((_, i) => ({ date: addDays(selDate, i + 1), sessions }));
     try {
@@ -2004,16 +2658,120 @@ function ProgrammingTab({ athleteId, token }) {
     } catch (e) { alert(e.message || "Copy failed"); }
   };
 
+  // Insert a {N% Benchmark} token at the cursor of the focused session body.
+  const insertToken = (name) => {
+    const i = focusIdx;
+    const ta = taRefs.current[i];
+    const token = `{80% ${name}}`;
+    const cur = String(draft[i]?.body || "");
+    if (!ta) {
+      setSession(i, { body: cur + (cur && !cur.endsWith("\n") ? " " : "") + token });
+      return;
+    }
+    const a = ta.selectionStart ?? cur.length;
+    const b = ta.selectionEnd ?? a;
+    const next = cur.slice(0, a) + token + cur.slice(b);
+    setSession(i, { body: next });
+    requestAnimationFrame(() => {
+      try { ta.focus(); ta.setSelectionRange(a + token.length, a + token.length); } catch {}
+    });
+  };
+
+  const importCsv = async (file) => {
+    setCsvMsg(""); setCsvBusy(true);
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (!rows.length) throw new Error("That file looks empty.");
+
+      // Accept a header row, or no header at all.
+      const head = rows[0].map((h) => h.trim().toLowerCase());
+      const hasHeader = head.includes("date") && (head.includes("body") || head.includes("session"));
+      const idx = hasHeader
+        ? {
+            date: head.indexOf("date"),
+            title: head.indexOf("title") >= 0 ? head.indexOf("title") : head.indexOf("session"),
+            time: head.indexOf("time"),
+            body: head.indexOf("body") >= 0 ? head.indexOf("body") : head.indexOf("workout"),
+          }
+        : { date: 0, title: 1, time: 2, body: 3 };
+      const body = hasHeader ? rows.slice(1) : rows;
+
+      // Group by date so several sessions can share a day.
+      const grouped = {};
+      let skipped = 0;
+      for (const r of body) {
+        const rawDate = String(r[idx.date] ?? "").trim();
+        // Accept YYYY-MM-DD and DD/MM/YYYY
+        let date = rawDate;
+        const uk = rawDate.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (uk) date = `${uk[3]}-${String(uk[2]).padStart(2, "0")}-${String(uk[1]).padStart(2, "0")}`;
+        const text2 = String(r[idx.body] ?? "").trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !text2) { skipped++; continue; }
+        const title = idx.title >= 0 ? String(r[idx.title] ?? "").trim() : "";
+        const time = idx.time >= 0 ? String(r[idx.time] ?? "").trim() : "";
+        (grouped[date] = grouped[date] || []).push({
+          title: title || "Session",
+          time: /^\d{1,2}:\d{2}$/.test(time) ? time : null,
+          body: text2,
+        });
+      }
+      const days = Object.entries(grouped).map(([date, sessions]) => ({ date, sessions }));
+      if (!days.length) throw new Error("No usable rows — each needs a date and a body.");
+
+      const r = await apiFetch(`/programming/${athleteId}/bulk`, token, {
+        method: "POST",
+        body: JSON.stringify({ days }),
+      });
+      await load();
+      setCsvMsg(`Imported ${r.saved} day(s)${skipped ? `, skipped ${skipped} row(s)` : ""}.`);
+    } catch (e) {
+      setCsvMsg(e.message || "Could not import that file");
+    }
+    setCsvBusy(false);
+  };
+
+  const csvTemplate = () => {
+    const rows = [
+      ["date", "title", "time", "body"],
+      [dates[0], "AM Strength", "07:00", "A. Back squat 5x3 @ {80% Back Squat}\nB. RDL 3x8"],
+      [dates[0], "PM Conditioning", "18:00", "4 x 500m @ {105% 2k Row}"],
+      [dates[1], "Session", "", "Rest day — 30 min easy walk"],
+    ];
+    const esc = (v) => (/[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v);
+    const csv = rows.map((r) => r.map(esc).join(",")).join("\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = "programming-template.csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
   // Meal context for the selected day, so training and food can be planned together
   const dayMeals = plannedMeals[selDate] || {};
   const mealSlots = ["Breakfast", "Lunch", "Dinner", "Snack"].filter((m) => (dayMeals[m] || []).length > 0);
   const mealCals = (slot) => (dayMeals[slot] || []).reduce((a, i) => a + Number(i.calories || 0), 0);
+
+  const benchList = Object.values(bests).sort((a, b) => a.name.localeCompare(b.name));
+
+  const saveState = saveErr
+    ? { text: `Not saved — ${saveErr}`, color: T.danger }
+    : saving
+    ? { text: "Saving…", color: T.muted }
+    : dirty
+    ? { text: "Unsaved changes", color: T.warn }
+    : savedAt
+    ? { text: `Saved ${savedAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`, color: T.coachGreen }
+    : { text: "", color: T.muted };
 
   return (
     <div style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 16, padding: 18 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
         <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 18, letterSpacing: 2, color: T.text }}>PROGRAMMING</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <button onClick={() => setShowCsv((v) => !v)} style={{ background: "none", border: `1px solid ${T.accent}44`, borderRadius: 8, padding: "4px 10px", color: T.accent, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">
+            📄 CSV
+          </button>
           <button onClick={() => setWeekOffset((o) => o - 1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "4px 10px", color: T.text, cursor: "pointer" }} type="button">◀</button>
           <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
             {ukShort(dates[0])} – {ukShort(dates[27])}
@@ -2021,9 +2779,46 @@ function ProgrammingTab({ athleteId, token }) {
           <button onClick={() => setWeekOffset((o) => o + 1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "4px 10px", color: T.text, cursor: "pointer" }} type="button">▶</button>
         </div>
       </div>
-      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12 }}>
-        Add one or more sessions per day. Line breaks are kept exactly as typed.
+      <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 12, lineHeight: 1.6 }}>
+        Add one or more sessions per day — line breaks are kept exactly as typed, and your work
+        saves itself as you go. Write <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>{"{80% Back Squat}"}</code> and
+        the athlete sees the real load off their current best.
       </div>
+
+      {/* CSV import */}
+      {showCsv && (
+        <div style={{ background: T.surface, border: `1px solid ${T.accent}33`, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, lineHeight: 1.7, marginBottom: 10 }}>
+            Columns: <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.text }}>date, title, time, body</code>.
+            Dates can be <code style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>YYYY-MM-DD</code> or <code style={{ fontFamily: "JetBrains Mono, ui-monospace" }}>DD/MM/YYYY</code>.
+            Several rows sharing a date become several sessions on that day. Multi-line bodies work if the field is quoted —
+            which is what Excel and Sheets do automatically.
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <label style={{
+              background: T.accent, color: T.bg, borderRadius: 9, padding: "8px 16px",
+              fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.2, cursor: csvBusy ? "default" : "pointer",
+            }}>
+              {csvBusy ? "IMPORTING…" : "CHOOSE CSV"}
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                disabled={csvBusy}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importCsv(f); e.target.value = ""; }}
+                style={{ display: "none" }}
+              />
+            </label>
+            <button onClick={csvTemplate} type="button" style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 9, padding: "8px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }}>
+              Download template
+            </button>
+            {csvMsg && (
+              <span style={{ fontFamily: "DM Sans", fontSize: 11, color: csvMsg.startsWith("Imported") ? T.coachGreen : T.warn }}>
+                {csvMsg}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Day strip */}
       <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 8, marginBottom: 12 }}>
@@ -2035,7 +2830,7 @@ function ProgrammingTab({ athleteId, token }) {
           return (
             <button
               key={d}
-              onClick={() => { if (dirty && !window.confirm("Discard unsaved changes on this day?")) return; setSelDate(d); }}
+              onClick={() => setSelDate(d)}
               style={{
                 minWidth: 52, padding: "6px 4px", borderRadius: 9,
                 border: `1px solid ${sel ? T.accent : count ? T.coachGreen + "66" : T.border}`,
@@ -2059,12 +2854,39 @@ function ProgrammingTab({ athleteId, token }) {
 
       {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : (
         <>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8, gap: 10, flexWrap: "wrap" }}>
             <span style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 15, letterSpacing: 1.5, color: T.accent }}>
               {new Date(selDate + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long" }).toUpperCase()} {ukLong(selDate)}
             </span>
-            {msg && <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>{msg}</span>}
+            <span style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
+              {msg && <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.coachGreen }}>{msg}</span>}
+              {saveState.text && (
+                <span style={{ fontFamily: "DM Sans", fontSize: 10.5, color: saveState.color }}>
+                  {saveState.text}
+                </span>
+              )}
+            </span>
           </div>
+
+          {/* Recoverable draft */}
+          {recover && (
+            <div style={{ background: `${T.warn}14`, border: `1px solid ${T.warn}44`, borderRadius: 10, padding: "10px 12px", marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "DM Sans", fontSize: 11, color: T.text, flex: 1, minWidth: 200 }}>
+                There's an unsaved draft for this day from{" "}
+                {recover.at ? new Date(recover.at).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "earlier"}.
+              </span>
+              <button
+                type="button"
+                onClick={() => { setDraft(recover.sessions.map((x) => ({ ...x }))); markEdited(); setRecover(null); }}
+                style={{ background: T.warn, color: T.bg, border: "none", borderRadius: 8, padding: "6px 12px", fontFamily: "DM Sans", fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+              >Restore it</button>
+              <button
+                type="button"
+                onClick={() => { try { localStorage.removeItem(PROG_DRAFT_KEY(athleteId, selDate)); } catch {} setRecover(null); }}
+                style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 8, padding: "6px 12px", color: T.muted, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }}
+              >Discard</button>
+            </div>
+          )}
 
           {/* Food planned that day — so training can be built around it */}
           {mealSlots.length > 0 && (
@@ -2073,6 +2895,35 @@ function ProgrammingTab({ athleteId, token }) {
               <span style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted }}>
                 {mealSlots.map((m) => `${m} ${Math.round(mealCals(m))}kcal`).join("  ·  ")}
               </span>
+            </div>
+          )}
+
+          {/* Benchmark chips — click to drop a percentage token in at the cursor */}
+          {benchList.length > 0 && draft.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontFamily: "DM Sans", fontSize: 9, letterSpacing: 1, color: T.muted, textTransform: "uppercase", marginBottom: 6 }}>
+                Insert a percentage
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {benchList.map((b) => (
+                  <button
+                    key={b.benchmarkId}
+                    type="button"
+                    onClick={() => insertToken(b.name)}
+                    title={`Current best ${fmtBenchValue(b.best, b.unit)} — inserts {80% ${b.name}}`}
+                    style={{
+                      background: T.surface, border: `1px solid ${T.border}`, color: T.text,
+                      borderRadius: 8, padding: "5px 9px", fontFamily: "DM Sans", fontSize: 10.5,
+                      cursor: "pointer", whiteSpace: "nowrap",
+                    }}
+                  >
+                    {b.name}
+                    <span style={{ marginLeft: 5, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.coachGreen }}>
+                      {fmtBenchValue(b.best, b.unit)}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -2107,9 +2958,11 @@ function ProgrammingTab({ athleteId, token }) {
                 </button>
               </div>
               <textarea
+                ref={(el) => { taRefs.current[i] = el; }}
+                onFocus={() => setFocusIdx(i)}
                 value={sx.body || ""}
                 onChange={(e) => setSession(i, { body: e.target.value })}
-                placeholder={"A. Back squat 5x3 @ 80%\nB. RDL 3x8\nC. 10 min AMRAP"}
+                placeholder={"A. Back squat 5x3 @ {80% Back Squat}\nB. RDL 3x8\nC. 4 x 500m @ {105% 2k Row}"}
                 rows={8}
                 style={{
                   width: "100%", background: T.surface, border: `1px solid ${T.border}`,
@@ -2118,6 +2971,17 @@ function ProgrammingTab({ athleteId, token }) {
                   resize: "vertical", outline: "none", boxSizing: "border-box",
                 }}
               />
+              {/* Live preview of what the athlete will actually read */}
+              {hasBenchTokens(sx.body) && (
+                <div style={{ marginTop: 8, background: `${T.coachGreen}0d`, border: `1px solid ${T.coachGreen}33`, borderRadius: 9, padding: "9px 11px" }}>
+                  <div style={{ fontFamily: "DM Sans", fontSize: 9, letterSpacing: 1, color: T.coachGreen, textTransform: "uppercase", marginBottom: 4 }}>
+                    Athlete sees
+                  </div>
+                  <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 12, color: T.text, whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+                    {resolveBenchTokens(sx.body, bests)}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
 
@@ -2126,20 +2990,21 @@ function ProgrammingTab({ athleteId, token }) {
               + Add session
             </button>
             <button
-              onClick={save}
-              disabled={saving || !dirty}
+              onClick={() => doSave()}
+              disabled={saving}
               style={{
-                background: dirty ? T.accent : T.border, color: dirty ? T.bg : T.muted,
+                background: dirty || saveErr ? T.accent : T.border, color: dirty || saveErr ? T.bg : T.muted,
                 border: "none", borderRadius: 10, padding: "10px 20px",
                 fontFamily: "Bebas Neue, system-ui", fontSize: 13, letterSpacing: 1.5,
-                cursor: dirty ? "pointer" : "default",
+                cursor: saving ? "default" : "pointer",
               }}
               type="button"
             >
-              {saving ? "SAVING…" : dirty ? "SAVE DAY" : "SAVED"}
+              {saving ? "SAVING…" : dirty || saveErr ? "SAVE NOW" : "SAVED"}
             </button>
             <button onClick={() => copyForward(1)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">→ Tomorrow</button>
             <button onClick={() => copyForward(6)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">→ Next 6 days</button>
+            <button onClick={() => copyForward(27)} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 10, padding: "10px 14px", color: T.text, fontFamily: "DM Sans", fontSize: 11, cursor: "pointer" }} type="button">→ Next 4 weeks</button>
           </div>
         </>
       )}
@@ -5090,6 +5955,7 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     { id: "macroplan", label: "MACRO PLAN" },
     { id: "mealplanner", label: "MEAL PLANNER" },
     ...(progEnabled ? [{ id: "programming", label: "PROGRAMMING" }] : []),
+    { id: "benchmarks", label: "BENCHMARKS" },
     { id: "messages", label: "MESSAGES" },
     { id: "foodlog", label: "FOOD LOG" },
     { id: "checkins", label: "CHECK-INS" },
@@ -5587,6 +6453,10 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
 
       {tab === "programming" && (
         <ProgrammingTab athleteId={athlete.id} token={token} />
+      )}
+
+      {tab === "benchmarks" && (
+        <BenchmarksManager athleteId={athlete.id} token={token} />
       )}
     </div>
   );

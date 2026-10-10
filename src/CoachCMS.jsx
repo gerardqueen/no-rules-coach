@@ -49,20 +49,36 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAMAAADD
 /* ─────────────────────────────────────────────────────────────────────────────
    BENCHMARKS — shared helpers (kept identical in App.jsx and CoachCMS.jsx)
 
-   Values are stored as plain numbers, except time-based tests which are stored
-   as SECONDS. So a 2k row of 7:12 is 432, and a back squat of 142.5kg is 142.5.
+   Values store as plain numbers, except time-based tests which store as
+   SECONDS. A 2k row of 7:08 is 428; a back squat of 142.5kg is 142.5.
 
-   Percentage programming: a coach writes a token in the session body and it
-   resolves against that athlete's current best when it's displayed —
+   ── Percentage programming ───────────────────────────────────────────────
+   A coach writes a token in the session body and it resolves against that
+   athlete's current best when displayed:
 
-       5 x 3 @ {80% Back Squat 1RM}
-    →  5 x 3 @ 80% Back Squat 1RM (115kg)
+     5 x 3 @ {80% Back Squat}        -> 5 x 3 @ 80% Back Squat 1RM (115kg)
+     4 x 500m @ {80% 2k Row /500m}   -> 4 x 500m @ 80% 2k Row (1:55 /500m)
+     Easy {75% 5k Run /km}           -> Easy 75% 5k Run (5:44 /km)
+     8 x 500m @ {2k Row /500m +5s}   -> 8 x 500m @ 2k Row (1:52 /500m)
 
-   The name match is forgiving: exact first, then prefix, then substring, so
-   "{80% Back Squat}" finds "Back Squat 1RM". Percentages of a time are a
-   percentage of the time itself, which is how row intervals get prescribed —
-   {105% 2k Row} off a 7:04 best gives 7:25, i.e. 5% slower than 2k pace.
-   Loads in kg/lb round to the nearest 2.5 so the number is loadable.
+   Grammar inside the braces:  [N%] <benchmark> [/distance] [+Ns | -Ns]
+     /500m /1k /km /mile   derive a pace from the test's own distance
+     +5s  -2s             shift the result by whole seconds
+
+   ── Why a lower percentage makes a time SLOWER ───────────────────────────
+   For a load, 80% simply scales down: 80% of 142.5kg is 114kg. A time cannot
+   work that way — 80% of a 1:47 split would be 1:26, which is FASTER than the
+   athlete's maximum and therefore nonsense. The percentage refers to effort,
+   so an easier effort has to produce a bigger number.
+
+   Effort relates to pace by a cube root (pace scales with power^-1/3), which
+   is the standard rowing power-to-pace relationship and holds up well for
+   running too. So 80% effort is about 7.7% slower, not 20%:
+
+     1:47 /500m at 80%  ->  1:55 /500m
+     5:12 /km   at 80%  ->  5:36 /km
+
+   Use the +Ns form when an exact number is wanted instead of a curve.
 ────────────────────────────────────────────────────────────────────────────── */
 const BENCH_UNITS = [
   { key: "kg", label: "kg (weight)" },
@@ -74,12 +90,20 @@ const BENCH_UNITS = [
   { key: "watts", label: "watts" },
 ];
 
-// 432 → "7:12".  Hours appear only when the result needs them.
+// Pace scales with power^(-1/3), so time at a given effort is base / pct^(1/3).
+const BENCH_EFFORT_EXPONENT = 1 / 3;
+function benchEffortTimeFactor(pct) {
+  const p = Number(pct);
+  if (!Number.isFinite(p) || p <= 0) return 1;
+  return Math.pow(p / 100, -BENCH_EFFORT_EXPONENT);
+}
+
+// 432 -> "7:12". Hours appear only when the result needs them.
 function fmtBenchValue(value, unit) {
   const n = Number(value);
   if (!Number.isFinite(n)) return "—";
   if (unit === "time") {
-    const total = Math.round(n);
+    const total = Math.max(0, Math.round(n));
     const h = Math.floor(total / 3600);
     const m = Math.floor((total % 3600) / 60);
     const s = total % 60;
@@ -92,7 +116,7 @@ function fmtBenchValue(value, unit) {
   return unit === "reps" ? txt : `${txt}${unit}`;
 }
 
-// "7:12" → 432. Also accepts "7.12", "432", and "1:02:30".
+// "7:12" -> 432. Also accepts "7.12", "432" and "1:02:30".
 function parseBenchValue(input, unit) {
   const raw = String(input ?? "").trim();
   if (!raw) return NaN;
@@ -104,34 +128,143 @@ function parseBenchValue(input, unit) {
   return parts[0] * 3600 + parts[1] * 60 + parts[2];
 }
 
-const BENCH_PCT_TOKEN = /\{\s*(\d{1,3}(?:\.\d+)?)\s*%\s*([^}]+?)\s*\}/g;
+// A tidy label for a pace distance: 500 -> "/500m", 1000 -> "/km".
+function fmtPaceUnit(metres) {
+  const m = Number(metres);
+  if (!Number.isFinite(m) || m <= 0) return "";
+  if (Math.abs(m - 1609.34) < 2) return "/mile";
+  if (m === 1000) return "/km";
+  if (m % 1000 === 0) return `/${m / 1000}k`;
+  return `/${Math.round(m)}m`;
+}
 
-// Expand every {N% Benchmark} token in a programming body.
-// `bests` is the map returned by GET /benchmarks/:athleteId.
+// Split "80% 2k Row /500m +5s" into its parts. Returns null if there's no
+// benchmark name left, so stray braces in a session body are left alone.
+function parseBenchToken(inner) {
+  let s = String(inner || "").trim();
+  if (!s) return null;
+
+  let offset = 0;
+  const off = s.match(/([+-])\s*(\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\s*$/i);
+  if (off) {
+    offset = (off[1] === "-" ? -1 : 1) * parseFloat(off[2]);
+    s = s.slice(0, off.index).trim();
+  }
+
+  let paceM = null;
+  const pace = s.match(/\/\s*(\d+(?:\.\d+)?)?\s*(km|k|m|miles?|mi)\s*$/i);
+  if (pace) {
+    const num = pace[1] ? parseFloat(pace[1]) : 1;
+    const u = pace[2].toLowerCase();
+    paceM = u === "m" ? num : u.startsWith("mi") ? num * 1609.34 : num * 1000;
+    s = s.slice(0, pace.index).trim();
+  }
+
+  let pct = null;
+  const p = s.match(/^(\d{1,3}(?:\.\d+)?)\s*%\s*/);
+  if (p) { pct = parseFloat(p[1]); s = s.slice(p[0].length).trim(); }
+
+  if (!s) return null;
+  return { pct, name: s, paceM, offset, hadPct: pct !== null };
+}
+
+function findBench(list, name) {
+  const want = String(name).toLowerCase();
+  return (
+    list.find((b) => String(b.name).toLowerCase() === want) ||
+    list.find((b) => String(b.name).toLowerCase().startsWith(want)) ||
+    list.find((b) => String(b.name).toLowerCase().includes(want)) ||
+    null
+  );
+}
+
+// Resolve one parsed token against a benchmark's best. Returns a display string.
+function resolveOneBench(tok, hit) {
+  const pct = tok.pct === null ? 100 : tok.pct;
+  const best = Number(hit.best);
+  const unit = hit.unit;
+  const pctLabel = tok.hadPct ? `${tok.pct}% ` : "";
+
+  if (unit === "time") {
+    const distance = Number(hit.distanceM);
+    let base = best;
+    let suffix = "";
+
+    if (tok.paceM) {
+      if (!Number.isFinite(distance) || distance <= 0) {
+        return `${pctLabel}${hit.name} (set a distance on this test to use a pace)`;
+      }
+      base = best / (distance / tok.paceM);   // whole-test time -> pace
+      suffix = ` ${fmtPaceUnit(tok.paceM)}`;
+    }
+
+    // Easier effort => slower time. See the note at the top of this block.
+    let v = base * benchEffortTimeFactor(pct) + tok.offset;
+    if (v < 1) v = 1;
+    return `${pctLabel}${hit.name} (${fmtBenchValue(v, "time")}${suffix})`;
+  }
+
+  // Loads, reps, distance covered and watts all scale straight down.
+  let v = best * (pct / 100) + (tok.offset || 0);
+  if (unit === "kg" || unit === "lb") v = Math.round(v / 2.5) * 2.5;
+  else if (unit === "reps") v = Math.round(v);
+  else v = Math.round(v * 10) / 10;
+  return `${pctLabel}${hit.name} (${fmtBenchValue(v, unit)})`;
+}
+
+const BENCH_TOKEN = /\{([^{}]+)\}/g;
+
+// Expand every benchmark token in a programming body. `bests` is the map from
+// GET /benchmarks/:athleteId. Braces that don't name a benchmark and carry no
+// percentage are left exactly as the coach typed them.
 function resolveBenchTokens(text, bests) {
   if (!text) return text || "";
   const list = Object.values(bests || {});
-  return String(text).replace(BENCH_PCT_TOKEN, (_full, pctStr, nameRaw) => {
-    const pct = parseFloat(pctStr);
-    const want = nameRaw.trim().toLowerCase();
-    const hit =
-      list.find((b) => String(b.name).toLowerCase() === want) ||
-      list.find((b) => String(b.name).toLowerCase().startsWith(want)) ||
-      list.find((b) => String(b.name).toLowerCase().includes(want));
-    if (!hit || !Number.isFinite(Number(hit.best))) {
-      return `${pctStr}% ${nameRaw.trim()} (no result logged yet)`;
+  return String(text).replace(BENCH_TOKEN, (full, inner) => {
+    const tok = parseBenchToken(inner);
+    if (!tok) return full;
+    const hit = findBench(list, tok.name);
+    if (!hit) return tok.hadPct ? `${tok.pct}% ${tok.name} (no result logged yet)` : full;
+    if (!Number.isFinite(Number(hit.best))) {
+      return `${tok.hadPct ? `${tok.pct}% ` : ""}${hit.name} (no result logged yet)`;
     }
-    let v = Number(hit.best) * (pct / 100);
-    if (hit.unit === "kg" || hit.unit === "lb") v = Math.round(v / 2.5) * 2.5;
-    else if (hit.unit === "time") v = Math.round(v);
-    else v = Math.round(v * 10) / 10;
-    return `${pctStr}% ${hit.name} (${fmtBenchValue(v, hit.unit)})`;
+    return resolveOneBench(tok, hit);
   });
 }
 
-// Does this text contain any percentage token at all?
-function hasBenchTokens(text) {
-  return !!text && /\{\s*\d{1,3}(?:\.\d+)?\s*%[^}]+\}/.test(String(text));
+// True when the text holds at least one token that would actually resolve.
+function hasBenchTokens(text, bests) {
+  if (!text) return false;
+  const list = Object.values(bests || {});
+  const matches = String(text).match(BENCH_TOKEN);
+  if (!matches) return false;
+  return matches.some((m) => {
+    const tok = parseBenchToken(m.slice(1, -1));
+    if (!tok) return false;
+    return tok.hadPct || !!findBench(list, tok.name);
+  });
+}
+
+// The token a coach most likely wants for a given benchmark: a pace for a
+// distance test, the whole result otherwise.
+function suggestBenchToken(b, pct = 80) {
+  const d = Number(b.distanceM);
+  if (b.unit === "time" && d > 0) {
+    const per = d >= 3000 ? 1000 : 500;
+    // A 500m row already IS the split, so a pace suffix would be redundant.
+    if (d !== per) return `{${pct}% ${b.name} ${fmtPaceUnit(per)}}`;
+  }
+  return `{${pct}% ${b.name}}`;
+}
+
+// A test's PB expressed as a pace, for display next to the raw time.
+function benchPaceLabel(b) {
+  if (b.unit !== "time") return null;
+  const d = Number(b.distanceM);
+  if (!Number.isFinite(d) || d <= 0) return null;
+  const per = d >= 3000 ? 1000 : 500;
+  if (d === per) return null;                  // a 500m row IS the split
+  return `${fmtBenchValue(Number(b.best) / (d / per), "time")} ${fmtPaceUnit(per)}`;
 }
 
 async function apiFetch(path, token, opts = {}) {
@@ -2037,6 +2170,7 @@ function BenchmarksManager({ athleteId, token }) {
   const [nbName, setNbName] = useState("");
   const [nbCat, setNbCat] = useState("General");
   const [nbUnit, setNbUnit] = useState("kg");
+  const [nbDist, setNbDist] = useState("");      // metres — enables pace maths
   const [nbSaving, setNbSaving] = useState(false);
 
   const load = async () => {
@@ -2093,9 +2227,14 @@ function BenchmarksManager({ athleteId, token }) {
     try {
       const made = await apiFetch(`/benchmark-types`, token, {
         method: "POST",
-        body: JSON.stringify({ name: nbName.trim(), category: nbCat.trim() || "General", unit: nbUnit }),
+        body: JSON.stringify({
+          name: nbName.trim(),
+          category: nbCat.trim() || "General",
+          unit: nbUnit,
+          distanceM: nbUnit === "time" && parseFloat(nbDist) > 0 ? parseFloat(nbDist) : null,
+        }),
       });
-      setNbName(""); setShowNew(false);
+      setNbName(""); setNbDist(""); setShowNew(false);
       await load();
       setSel(made.id);
     } catch (e) { setMsg(e.message || "Could not create benchmark"); }
@@ -2148,9 +2287,11 @@ function BenchmarksManager({ athleteId, token }) {
             {withResults.length} of {types.length} tested
           </div>
         </div>
-        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14, lineHeight: 1.6 }}>
-          These are what percentage programming reads. Write <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>{"{80% Back Squat}"}</code> in
-          a session and the athlete sees the actual load.
+        <div style={{ fontFamily: "DM Sans", fontSize: 11, color: T.muted, marginBottom: 14, lineHeight: 1.7 }}>
+          These are what percentage programming reads. Write <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>{"{80% Back Squat}"}</code> for
+          a load, or <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>{"{80% 2k Row /500m}"}</code> for a pace.
+          On a timed test a lower percentage is an easier effort, so the time goes <em>up</em> —
+          a 1:47 split at 80% comes out at 1:55, not 1:26.
         </div>
 
         {withResults.length === 0 ? (
@@ -2184,6 +2325,11 @@ function BenchmarksManager({ athleteId, token }) {
                     <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, color: T.text, letterSpacing: 1, lineHeight: 1.2 }}>
                       {fmtBenchValue(b.best, b.unit)}
                     </div>
+                    {benchPaceLabel(b) && (
+                      <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9.5, color: T.accent }}>
+                        {benchPaceLabel(b)}
+                      </div>
+                    )}
                     <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: atBest ? T.coachGreen : T.muted }}>
                       {atBest ? `PB · ${uk(b.bestDate)}` : `now ${fmtBenchValue(b.latest, b.unit)} · ${uk(b.latestDate)}`}
                     </div>
@@ -2236,6 +2382,20 @@ function BenchmarksManager({ athleteId, token }) {
                 {BENCH_UNITS.map((u) => <option key={u.key} value={u.key}>{u.label}</option>)}
               </select>
             </div>
+            {nbUnit === "time" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+                <input
+                  value={nbDist}
+                  onChange={(e) => setNbDist(e.target.value.replace(/[^\d.]/g, ""))}
+                  placeholder="Distance in metres (e.g. 2000)"
+                  style={{ flex: 1, background: T.bg, border: `1px solid ${T.border}`, borderRadius: 9, padding: "9px 11px", color: T.text, fontFamily: "DM Sans", fontSize: 12, outline: "none" }}
+                />
+                <span style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, flex: 1, lineHeight: 1.5 }}>
+                  Optional, but it's what lets you programme a pace —
+                  set 2000 and you can write <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>/500m</code>.
+                </span>
+              </div>
+            )}
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <button
                 type="button"
@@ -2659,21 +2819,23 @@ function ProgrammingTab({ athleteId, token }) {
   };
 
   // Insert a {N% Benchmark} token at the cursor of the focused session body.
-  const insertToken = (name) => {
+  const insertToken = (b) => {
     const i = focusIdx;
     const ta = taRefs.current[i];
-    const token = `{80% ${name}}`;
+    // A distance test gets a pace token (/500m, /km); everything else the
+    // plain percentage form.
+    const token = suggestBenchToken(b);
     const cur = String(draft[i]?.body || "");
     if (!ta) {
       setSession(i, { body: cur + (cur && !cur.endsWith("\n") ? " " : "") + token });
       return;
     }
-    const a = ta.selectionStart ?? cur.length;
-    const b = ta.selectionEnd ?? a;
-    const next = cur.slice(0, a) + token + cur.slice(b);
+    const selStart = ta.selectionStart ?? cur.length;
+    const selEnd = ta.selectionEnd ?? selStart;
+    const next = cur.slice(0, selStart) + token + cur.slice(selEnd);
     setSession(i, { body: next });
     requestAnimationFrame(() => {
-      try { ta.focus(); ta.setSelectionRange(a + token.length, a + token.length); } catch {}
+      try { ta.focus(); ta.setSelectionRange(selStart + token.length, selStart + token.length); } catch {}
     });
   };
 
@@ -2735,7 +2897,7 @@ function ProgrammingTab({ athleteId, token }) {
     const rows = [
       ["date", "title", "time", "body"],
       [dates[0], "AM Strength", "07:00", "A. Back squat 5x3 @ {80% Back Squat}\nB. RDL 3x8"],
-      [dates[0], "PM Conditioning", "18:00", "4 x 500m @ {105% 2k Row}"],
+      [dates[0], "PM Conditioning", "18:00", "4 x 500m @ {80% 2k Row /500m}"],
       [dates[1], "Session", "", "Rest day — 30 min easy walk"],
     ];
     const esc = (v) => (/[",\n]/.test(v) ? `"${String(v).replace(/"/g, '""')}"` : v);
@@ -2905,24 +3067,35 @@ function ProgrammingTab({ athleteId, token }) {
                 Insert a percentage
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                {benchList.map((b) => (
-                  <button
-                    key={b.benchmarkId}
-                    type="button"
-                    onClick={() => insertToken(b.name)}
-                    title={`Current best ${fmtBenchValue(b.best, b.unit)} — inserts {80% ${b.name}}`}
-                    style={{
-                      background: T.surface, border: `1px solid ${T.border}`, color: T.text,
-                      borderRadius: 8, padding: "5px 9px", fontFamily: "DM Sans", fontSize: 10.5,
-                      cursor: "pointer", whiteSpace: "nowrap",
-                    }}
-                  >
-                    {b.name}
-                    <span style={{ marginLeft: 5, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.coachGreen }}>
-                      {fmtBenchValue(b.best, b.unit)}
-                    </span>
-                  </button>
-                ))}
+                {benchList.map((b) => {
+                  const pace = benchPaceLabel(b);
+                  return (
+                    <button
+                      key={b.benchmarkId}
+                      type="button"
+                      onClick={() => insertToken(b)}
+                      title={`Best ${fmtBenchValue(b.best, b.unit)}${pace ? ` (${pace})` : ""} — inserts ${suggestBenchToken(b)}`}
+                      style={{
+                        background: T.surface, border: `1px solid ${T.border}`, color: T.text,
+                        borderRadius: 8, padding: "5px 9px", fontFamily: "DM Sans", fontSize: 10.5,
+                        cursor: "pointer", whiteSpace: "nowrap",
+                      }}
+                    >
+                      {b.name}
+                      <span style={{ marginLeft: 5, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 9, color: T.coachGreen }}>
+                        {pace || fmtBenchValue(b.best, b.unit)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, marginTop: 7, lineHeight: 1.7 }}>
+                Chips drop in at 80% — edit the number once it's there. Add{" "}
+                <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>/500m</code>,{" "}
+                <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>/km</code> or{" "}
+                <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>/mile</code> for a pace,
+                or <code style={{ fontFamily: "JetBrains Mono, ui-monospace", color: T.accent }}>+5s</code> to shift it
+                by exact seconds. On a timed test a lower percentage means a slower time.
               </div>
             </div>
           )}
@@ -2962,7 +3135,7 @@ function ProgrammingTab({ athleteId, token }) {
                 onFocus={() => setFocusIdx(i)}
                 value={sx.body || ""}
                 onChange={(e) => setSession(i, { body: e.target.value })}
-                placeholder={"A. Back squat 5x3 @ {80% Back Squat}\nB. RDL 3x8\nC. 4 x 500m @ {105% 2k Row}"}
+                placeholder={"A. Back squat 5x3 @ {80% Back Squat}\nB. RDL 3x8\nC. 4 x 500m @ {80% 2k Row /500m}"}
                 rows={8}
                 style={{
                   width: "100%", background: T.surface, border: `1px solid ${T.border}`,
@@ -2972,7 +3145,7 @@ function ProgrammingTab({ athleteId, token }) {
                 }}
               />
               {/* Live preview of what the athlete will actually read */}
-              {hasBenchTokens(sx.body) && (
+              {hasBenchTokens(sx.body, bests) && (
                 <div style={{ marginTop: 8, background: `${T.coachGreen}0d`, border: `1px solid ${T.coachGreen}33`, borderRadius: 9, padding: "9px 11px" }}>
                   <div style={{ fontFamily: "DM Sans", fontSize: 9, letterSpacing: 1, color: T.coachGreen, textTransform: "uppercase", marginBottom: 4 }}>
                     Athlete sees

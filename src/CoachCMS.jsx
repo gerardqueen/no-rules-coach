@@ -1084,6 +1084,7 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
+  const [athleteSetPlan, setAthleteSetPlan] = useState(false);
 
   const emptyWeek = () =>
     DAYS.reduce((acc, d) => {
@@ -1125,6 +1126,13 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
             fat: Number(r.fat_g || 0),
           };
         });
+        // A self-signup user can set their own targets while they have no coach,
+        // so updated_by pointing at the athlete means these are their numbers,
+        // not a previous coach's. Worth flagging before you overwrite them.
+        const selfSet = (Array.isArray(rows) ? rows : []).some(
+          (r) => Number(r.updated_by) === Number(athleteId) && Number(r.calories) > 0
+        );
+        setAthleteSetPlan(selfSet);
         setPlan((prev) => {
           const next = { ...prev };
           DAYS.forEach((d) => {
@@ -1190,6 +1198,13 @@ function WeeklyMacroPlan({ athleteId, baseTargets, token, onSaved }) {
           </button>
         </div>
       </div>
+
+      {athleteSetPlan ? (
+        <div style={{ marginTop: 12, background: `${T.accent}12`, border: `1px solid ${T.accent}44`, borderRadius: 12, padding: 12, color: T.muted, fontFamily: "DM Sans", fontSize: 12, lineHeight: 1.6 }}>
+          These targets were set by the client themselves before they joined your roster.
+          Saving replaces them with yours, and their app becomes read-only.
+        </div>
+      ) : null}
 
       {err ? (
         <div style={{ marginTop: 12, background: `${T.warn}18`, border: `1px solid ${T.warn}44`, borderRadius: 12, padding: 12, color: T.warn, fontFamily: "DM Sans", fontSize: 12 }}>{err}</div>
@@ -4045,7 +4060,7 @@ function WellbeingManager({ athleteId, token }) {
         </div>
 
         {loading ? <div style={{ color: T.muted, fontSize: 12 }}>Loading…</div> : habits.length === 0 ? (
-          <div style={{ color: T.muted, fontSize: 12 }}>No habits set yet. Add the first one above.</div>
+          <div style={{ color: T.muted, fontSize: 12 }}>No habits set yet. Add the first one above — the client can add their own too.</div>
         ) : (
           <div style={{ overflowX: "auto" }}>
             {/* Header: dates */}
@@ -4058,7 +4073,19 @@ function WellbeingManager({ athleteId, token }) {
             </div>
             {habits.map((h) => (
               <div key={h.id} style={{ display: "grid", gridTemplateColumns: `minmax(140px, 1.6fr) repeat(7, 34px) 28px`, gap: 4, alignItems: "center", padding: "5px 0", borderBottom: `1px solid ${T.border}20` }}>
-                <span style={{ fontSize: 12, color: T.text, fontFamily: "DM Sans" }}>{h.title}</span>
+                <span style={{ fontSize: 12, color: T.text, fontFamily: "DM Sans" }}>
+                  {h.title}
+                  {h.selfAdded && (
+                    <span
+                      title="The client added this one themselves"
+                      style={{
+                        marginLeft: 6, fontSize: 8, color: T.accent,
+                        border: `1px solid ${T.accent}55`, borderRadius: 4,
+                        padding: "1px 4px", letterSpacing: 0.4, verticalAlign: "middle",
+                      }}
+                    >THEIRS</span>
+                  )}
+                </span>
                 {last7.map((d) => {
                   const rag = ratingMap[`${h.id}|${d}`];
                   return (
@@ -4069,7 +4096,12 @@ function WellbeingManager({ athleteId, token }) {
                     }} title={rag || "not rated"} />
                   );
                 })}
-                <button onClick={() => deleteHabit(h.id)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 13 }} title="Remove habit" type="button">✕</button>
+                {h.canDelete === false ? (
+                  // A habit the client set for themselves is theirs to drop.
+                  <span style={{ fontSize: 11, color: T.border, textAlign: "center" }} title="Only the client can remove a habit they added">—</span>
+                ) : (
+                  <button onClick={() => deleteHabit(h.id)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 13 }} title="Remove habit" type="button">✕</button>
+                )}
               </div>
             ))}
             <div style={{ display: "flex", gap: 12, marginTop: 10 }}>

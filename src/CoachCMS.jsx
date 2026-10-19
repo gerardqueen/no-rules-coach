@@ -4953,6 +4953,14 @@ function SignupsModal({ token, onClose, onClaimed }) {
                   {u.marketingOptIn && (
                     <span style={{ marginLeft: 6, fontSize: 10 }} title="Opted in to tips and updates">✉️</span>
                   )}
+                  {/* What they said they were after when they signed up */}
+                  <span style={{ marginLeft: 6, fontFamily: "DM Sans", fontSize: 9, color: T.muted }}>
+                    {u.nutritionEnabled !== false && u.programmingEnabled
+                      ? "nutrition + programming"
+                      : u.programmingEnabled
+                      ? "programming"
+                      : "nutrition"}
+                  </span>
                 </div>
                 <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                   {u.email}{u.createdAt ? ` · joined ${fmtDate(u.createdAt)}` : ""}
@@ -6081,6 +6089,9 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   const [confirmResend, setConfirmResend] = useState(false);
   const [isActive, setIsActive] = useState(athlete.active !== false);
   const [progEnabled, setProgEnabled] = useState(!!athlete.programmingEnabled);
+  // Nutrition defaults on — every existing client is a nutrition client.
+  const [nutriEnabled, setNutriEnabled] = useState(athlete.nutritionEnabled !== false);
+  const [svcBusy, setSvcBusy] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [coachList, setCoachList] = useState([]);
   const [transferTo, setTransferTo] = useState("");
@@ -6093,6 +6104,31 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   }));
   const [goals, setGoals] = useState(() => initialGoals);
   const [saved, setSaved] = useState(false);
+
+  // Set which services this client is on. The server refuses to leave an
+  // account with neither, so the guard is mirrored here to explain why rather
+  // than letting the click bounce back with an error.
+  const setServices = async (nutrition, programming) => {
+    if (!nutrition && !programming) {
+      alert("A client needs at least one — nutrition, programming, or both.");
+      return;
+    }
+    const prevN = nutriEnabled, prevP = progEnabled;
+    setNutriEnabled(nutrition);
+    setProgEnabled(programming);
+    setSvcBusy(true);
+    try {
+      await apiFetch(`/athletes/${athlete.id}/services`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ nutrition, programming }),
+      });
+    } catch (err) {
+      setNutriEnabled(prevN);
+      setProgEnabled(prevP);
+      alert(err.message || "Could not update services");
+    }
+    setSvcBusy(false);
+  };
 
   // ── Header shows the PER-DAY plan target for TODAY (live) ────────────────────
   // The header used to show averaged/default targets, so a carb-load day never
@@ -6155,19 +6191,32 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
     }
   };
 
+  // Only show the tabs that match what this client is signed up for. The
+  // nutrition four come and go with nutrition; PROGRAMMING with programming.
+  // Everything else applies to any client.
   const tabs = [
-    { id: "nutrition", label: "NUTRITION" },
-    { id: "macroplan", label: "MACRO PLAN" },
-    { id: "mealplanner", label: "MEAL PLANNER" },
+    ...(nutriEnabled ? [
+      { id: "nutrition", label: "NUTRITION" },
+      { id: "macroplan", label: "MACRO PLAN" },
+      { id: "mealplanner", label: "MEAL PLANNER" },
+    ] : []),
     ...(progEnabled ? [{ id: "programming", label: "PROGRAMMING" }] : []),
     { id: "benchmarks", label: "BENCHMARKS" },
     { id: "messages", label: "MESSAGES" },
-    { id: "foodlog", label: "FOOD LOG" },
+    ...(nutriEnabled ? [{ id: "foodlog", label: "FOOD LOG" }] : []),
     { id: "checkins", label: "CHECK-INS" },
     { id: "videos", label: "VIDEOS" },
     { id: "calendar", label: "CALENDAR" },
     { id: "wellbeing", label: "WELLBEING" },
   ];
+
+  // If the selected tab isn't available for this client's services — because a
+  // toggle was just switched off, or they're programming-only — fall back to
+  // the first tab that is, rather than leaving an empty pane.
+  useEffect(() => {
+    if (!tabs.some((t) => t.id === tab)) setTab(tabs[0]?.id || "wellbeing");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nutriEnabled, progEnabled, tab]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16, animation: "fadeUp .2s ease" }}>
@@ -6204,28 +6253,38 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
           </div>
         </div>
 
-        {/* Delete athlete button */}
-        {/* Programming on/off for this client */}
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "DM Sans", fontSize: 11, color: progEnabled ? T.accent : T.muted, cursor: "pointer", border: `1px solid ${progEnabled ? T.accent : T.border}`, borderRadius: 8, padding: "6px 12px" }}>
-          <input
-            type="checkbox"
-            checked={progEnabled}
-            onChange={async (e) => {
-              const next = e.target.checked;
-              setProgEnabled(next);
-              try {
-                await apiFetch(`/athletes/${athlete.id}/programming-enabled`, token, {
-                  method: "PATCH",
-                  body: JSON.stringify({ enabled: next }),
-                });
-              } catch (err) {
-                setProgEnabled(!next);
-                alert(err.message || "Could not update programming setting");
-              }
-            }}
-          />
-          🏋 Programming
-        </label>
+        {/* What this client is signed up for — drives which tabs appear */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }} title="What this client is signed up for">
+          {[
+            { key: "nutrition", label: "🥗 Nutrition", on: nutriEnabled },
+            { key: "programming", label: "🏋 Programming", on: progEnabled },
+          ].map((svc) => (
+            <label
+              key={svc.key}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                fontFamily: "DM Sans", fontSize: 11,
+                color: svc.on ? T.accent : T.muted,
+                cursor: svcBusy ? "default" : "pointer",
+                border: `1px solid ${svc.on ? T.accent : T.border}`,
+                borderRadius: 8, padding: "6px 12px",
+                opacity: svcBusy ? 0.6 : 1,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={svc.on}
+                disabled={svcBusy}
+                onChange={(e) =>
+                  svc.key === "nutrition"
+                    ? setServices(e.target.checked, progEnabled)
+                    : setServices(nutriEnabled, e.target.checked)
+                }
+              />
+              {svc.label}
+            </label>
+          ))}
+        </div>
 
         {/* Pause / Unpause */}
         <button
@@ -6872,6 +6931,7 @@ export default function CoachCMS() {
           sport: a.sport || "—",
           active: a.active !== false,
           programmingEnabled: !!a.programming_enabled,
+          nutritionEnabled: a.nutrition_enabled !== false,
           avatar: initialsOf(a.name),
           avatarColor: randomAvatarColor(),
           macroGoals: { calories: 2500, protein: 180, carbs: 280, fat: 75 },
@@ -7219,6 +7279,12 @@ export default function CoachCMS() {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         <span style={{ fontWeight: 700 }}>{a.name}</span>
                         <Badge label={a.sport || "ATHLETE"} color={T.coachGreen} />
+                        {/* What they're signed up for, at a glance */}
+                        {a.nutritionEnabled !== false && a.programmingEnabled
+                          ? <Badge label="NUTRITION + PROGRAMMING" color={T.accent} />
+                          : a.programmingEnabled
+                          ? <Badge label="PROGRAMMING" color={T.accent} />
+                          : <Badge label="NUTRITION" color={T.accent} />}
                         {a.active === false && <Badge label="PAUSED" color="#f59e0b" />}
                       </div>
                       <div style={{ fontFamily: "JetBrains Mono, ui-monospace", fontSize: 10, color: T.muted, marginTop: 3 }}>

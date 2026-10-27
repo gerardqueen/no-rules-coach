@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * COACHCMS.jsx — Full replacement file
@@ -6870,6 +6871,234 @@ function AdminPanel({ token, myId }) {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   MY ACCOUNT — change your own email address or password
+   The same two-step flow the athlete app uses: the code goes to the NEW
+   address and nothing moves until it is entered, so a typo cannot lock a coach
+   out of the CMS. It calls the same endpoints (/me/email/request,
+   /me/email/confirm, /me/password), which key off requireAuth rather than a
+   role, and the fresh token the confirm step returns is built from the user
+   row — so a coach stays a coach and an admin stays an admin.
+────────────────────────────────────────────────────────────────────────────── */
+function CoachAccountModal({ me, token, onClose, onAccountChanged }) {
+  const [pane, setPane] = useState("email");
+
+  // Email change
+  const [newEmail, setNewEmail] = useState("");
+  const [curPass, setCurPass] = useState("");
+  const [code, setCode] = useState("");
+  const [stage, setStage] = useState("request"); // request | confirm | done
+  const [sentTo, setSentTo] = useState("");
+
+  // Password change
+  const [pwCur, setPwCur] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwNew2, setPwNew2] = useState("");
+
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const inputS = {
+    width: "100%", background: T.surface, border: `1px solid ${T.border}`,
+    borderRadius: 10, padding: "12px 14px", color: T.text,
+    fontFamily: "DM Sans", fontSize: 13, outline: "none",
+    boxSizing: "border-box", marginBottom: 10,
+  };
+  const labelS = {
+    fontFamily: "DM Sans", fontSize: 10.5, color: T.muted, letterSpacing: 1,
+    textTransform: "uppercase", display: "block", marginBottom: 5,
+  };
+  const primaryBtn = {
+    width: "100%", background: T.accent, color: T.bg, border: "none",
+    borderRadius: 11, padding: 13, fontFamily: "Bebas Neue, system-ui",
+    fontSize: 16, letterSpacing: 1.5, cursor: busy ? "default" : "pointer",
+    opacity: busy ? 0.7 : 1,
+  };
+
+  const requestChange = async () => {
+    setErr(""); setMsg("");
+    const em = newEmail.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(em)) { setErr("Enter a valid email address."); return; }
+    if (!curPass) { setErr("Enter your current password."); return; }
+    setBusy(true);
+    try {
+      const r = await apiFetch("/me/email/request", token, {
+        method: "POST",
+        body: JSON.stringify({ newEmail: em, currentPassword: curPass }),
+      });
+      setSentTo(r?.sentTo || em);
+      setStage("confirm");
+      setCurPass("");
+      setMsg(`We've sent a 6-digit code to ${r?.sentTo || em}.`);
+    } catch (e) { setErr(e.message || "Could not start the change"); }
+    setBusy(false);
+  };
+
+  const confirmChange = async () => {
+    setErr(""); setMsg("");
+    if (code.replace(/\D/g, "").length !== 6) { setErr("Enter the 6-digit code."); return; }
+    setBusy(true);
+    try {
+      const r = await apiFetch("/me/email/confirm", token, {
+        method: "POST",
+        body: JSON.stringify({ code: code.replace(/\D/g, "") }),
+      });
+      // The confirm hands back a token carrying the new address. It is stored
+      // AND lifted into app state: without the lift the top bar keeps showing
+      // the old address until a reload, which reads as "it didn't work".
+      if (r?.token) { try { localStorage.setItem(TOKEN_KEY, r.token); } catch {} }
+      setStage("done");
+      setMsg(`Your email address is now ${r?.email || sentTo}.`);
+      onAccountChanged?.({ email: r?.email || sentTo, token: r?.token || token });
+    } catch (e) { setErr(e.message || "Could not confirm the change"); }
+    setBusy(false);
+  };
+
+  const changePassword = async () => {
+    setErr(""); setMsg("");
+    if (!pwCur) { setErr("Enter your current password."); return; }
+    if (pwNew.length < 8) { setErr("New password must be at least 8 characters."); return; }
+    if (pwNew !== pwNew2) { setErr("New passwords don't match."); return; }
+    setBusy(true);
+    try {
+      await apiFetch("/me/password", token, {
+        method: "POST",
+        body: JSON.stringify({ currentPassword: pwCur, newPassword: pwNew }),
+      });
+      setPwCur(""); setPwNew(""); setPwNew2("");
+      setMsg("Password changed.");
+    } catch (e) { setErr(e.message || "Could not change the password"); }
+    setBusy(false);
+  };
+
+  // Portalled to <body>: the CMS top bar carries backdropFilter, and a filter
+  // makes an element the containing block for its position:fixed descendants.
+  // Rendering here keeps the overlay measured against the viewport wherever
+  // the trigger button is later moved to.
+  return createPortal(
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "#000000d0", zIndex: 999,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)",
+        paddingLeft: 20, paddingRight: 20,
+      }}
+      onClick={(e) => e.target === e.currentTarget && !busy && onClose()}
+    >
+      <div style={{ width: "100%", maxWidth: 480, maxHeight: "100%", overflowY: "auto", background: T.card, border: `1px solid ${T.accent}44`, borderRadius: 22 }}>
+        {/* Sticky so the ✕ stays put if the card has to scroll on a laptop
+            screen or a tablet with the keyboard up. */}
+        <div style={{ padding: "20px 24px", borderBottom: `1px solid ${T.border}`, display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 1, background: T.card, borderTopLeftRadius: 22, borderTopRightRadius: 22 }}>
+          <div style={{ fontFamily: "Bebas Neue, system-ui", fontSize: 22, letterSpacing: 2, color: T.text }}>MY ACCOUNT</div>
+          <button onClick={onClose} type="button" style={{ background: "none", border: "none", color: T.muted, fontSize: 20, cursor: "pointer", padding: "6px 10px", margin: "-6px -10px" }}>✕</button>
+        </div>
+
+        <div style={{ padding: 24 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 18 }}>
+            {[
+              { k: "email", label: "Email address" },
+              { k: "password", label: "Password" },
+            ].map((t) => (
+              <button
+                key={t.k}
+                type="button"
+                onClick={() => { setPane(t.k); setErr(""); setMsg(""); }}
+                style={{
+                  flex: 1,
+                  background: pane === t.k ? `${T.accent}1f` : T.surface,
+                  border: `1px solid ${pane === t.k ? T.accent : T.border}`,
+                  color: pane === t.k ? T.accent : T.text,
+                  borderRadius: 10, padding: "9px 8px",
+                  fontFamily: "DM Sans", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >{t.label}</button>
+            ))}
+          </div>
+
+          {err && (
+            <div style={{ background: `${T.danger}18`, border: `1px solid ${T.danger}44`, borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontFamily: "DM Sans", fontSize: 12, color: T.danger }}>
+              {err}
+            </div>
+          )}
+          {msg && (
+            <div style={{ background: `${T.coachGreen}18`, border: `1px solid ${T.coachGreen}44`, borderRadius: 10, padding: "10px 12px", marginBottom: 12, fontFamily: "DM Sans", fontSize: 12, color: T.coachGreen }}>
+              {msg}
+            </div>
+          )}
+
+          {pane === "email" && (
+            <>
+              <div style={{ fontFamily: "DM Sans", fontSize: 11.5, color: T.muted, marginBottom: 14, lineHeight: 1.65 }}>
+                Currently <span style={{ color: T.text, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 11 }}>{me?.email}</span>.
+                We'll send a code to the new address to check it works before switching.
+              </div>
+
+              {stage === "request" && (
+                <>
+                  <label style={labelS}>New email address</label>
+                  <input value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="you@example.com" type="email" autoComplete="email" style={inputS} />
+                  <label style={labelS}>Current password</label>
+                  <input value={curPass} onChange={(e) => setCurPass(e.target.value)} onKeyDown={(e) => e.key === "Enter" && requestChange()} placeholder="••••••••" type="password" autoComplete="current-password" style={inputS} />
+                  <button onClick={requestChange} disabled={busy} type="button" style={primaryBtn}>
+                    {busy ? "SENDING…" : "SEND CODE"}
+                  </button>
+                </>
+              )}
+
+              {stage === "confirm" && (
+                <>
+                  <label style={labelS}>6-digit code</label>
+                  <input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    onKeyDown={(e) => e.key === "Enter" && confirmChange()}
+                    placeholder="123456"
+                    inputMode="numeric"
+                    style={{ ...inputS, fontFamily: "JetBrains Mono, ui-monospace", fontSize: 19, letterSpacing: 7, textAlign: "center" }}
+                  />
+                  <button onClick={confirmChange} disabled={busy} type="button" style={primaryBtn}>
+                    {busy ? "CHECKING…" : "CONFIRM CHANGE"}
+                  </button>
+                  <button
+                    onClick={() => { setStage("request"); setCode(""); setErr(""); setMsg(""); }}
+                    type="button"
+                    style={{ width: "100%", marginTop: 10, background: "none", border: `1px solid ${T.border}`, color: T.muted, borderRadius: 10, padding: 10, fontFamily: "DM Sans", fontSize: 12, cursor: "pointer" }}
+                  >
+                    Use a different address
+                  </button>
+                </>
+              )}
+
+              {stage === "done" && (
+                <div style={{ fontFamily: "DM Sans", fontSize: 12.5, color: T.text, lineHeight: 1.7 }}>
+                  Done. Sign-in now uses the new address — the old one will not work.
+                </div>
+              )}
+            </>
+          )}
+
+          {pane === "password" && (
+            <>
+              <label style={labelS}>Current password</label>
+              <input value={pwCur} onChange={(e) => setPwCur(e.target.value)} type="password" autoComplete="current-password" placeholder="••••••••" style={inputS} />
+              <label style={labelS}>New password</label>
+              <input value={pwNew} onChange={(e) => setPwNew(e.target.value)} type="password" autoComplete="new-password" placeholder="At least 8 characters" style={inputS} />
+              <label style={labelS}>Repeat new password</label>
+              <input value={pwNew2} onChange={(e) => setPwNew2(e.target.value)} onKeyDown={(e) => e.key === "Enter" && changePassword()} type="password" autoComplete="new-password" placeholder="••••••••" style={inputS} />
+              <button onClick={changePassword} disabled={busy} type="button" style={primaryBtn}>
+                {busy ? "SAVING…" : "CHANGE PASSWORD"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
 export default function CoachCMS() {
   const [me, setMe] = useState(null); // { id, email, name, role, token }
   const [token, setToken] = useState(null);
@@ -6886,6 +7115,7 @@ export default function CoachCMS() {
   const [showBroadcast, setShowBroadcast] = useState(false);
   const [showBroadcastContent, setShowBroadcastContent] = useState(false);
   const [showSignups, setShowSignups] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   useEffect(() => {
     const link = document.createElement("link");
     link.rel = "stylesheet";
@@ -7095,6 +7325,21 @@ export default function CoachCMS() {
             type="button"
           >
             {view === "inbox" ? "← Clients" : "💬 Inbox"}
+          </button>
+
+          <button
+            onClick={() => setShowAccount(true)}
+            style={{
+              background: "none",
+              border: `1px solid ${T.border}`,
+              color: T.muted,
+              borderRadius: 10, padding: "8px 12px", cursor: "pointer",
+              fontFamily: "DM Sans", fontSize: 12,
+            }}
+            type="button"
+            title="Change your email address or password"
+          >
+            ✉ Account
           </button>
 
           <button
@@ -7370,6 +7615,21 @@ export default function CoachCMS() {
           token={token}
           onClose={() => setShowSignups(false)}
           onClaimed={() => setRosterRefresh((n) => n + 1)}
+        />
+      )}
+
+      {showAccount && (
+        <CoachAccountModal
+          me={me}
+          token={token}
+          onClose={() => setShowAccount(false)}
+          onAccountChanged={({ email, token: fresh }) => {
+            // Both pieces of state carry the token in this component, so both
+            // are updated — otherwise the roster keeps calling with the old
+            // one and the top bar keeps printing the old address.
+            setMe((m) => (m ? { ...m, email, token: fresh } : m));
+            setToken(fresh);
+          }}
         />
       )}
     </div>

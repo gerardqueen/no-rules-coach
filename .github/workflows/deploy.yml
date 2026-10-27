@@ -18,11 +18,12 @@ jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      # Node 20 went end-of-life in April 2026, so the build runs on 24 (LTS).
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: '24'
           cache: npm
 
       # Debug: proves node/npm exist
@@ -37,8 +38,8 @@ jobs:
 
       - run: npm run build
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5

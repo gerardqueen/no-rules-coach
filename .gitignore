@@ -1,2 +1,7 @@
-node_modules/ 
-dist/ 
+node_modules/
+dist/
+
+# Local environment files - never commit these
+.env
+.env.*
+!.env.example

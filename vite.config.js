@@ -5,4 +5,3 @@ export default defineConfig({
   plugins: [react()],
   base: "/no-rules-coach/",
 });
-``

@@ -6093,6 +6093,12 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
   // Nutrition defaults on — every existing client is a nutrition client.
   const [nutriEnabled, setNutriEnabled] = useState(athlete.nutritionEnabled !== false);
   const [svcBusy, setSvcBusy] = useState(false);
+  // Which trackers this client sees on their hub. The catalog comes from the
+  // server rather than being hardcoded here, so a feature added server-side
+  // appears in this row without a CMS release.
+  const [featureCatalog, setFeatureCatalog] = useState([]);
+  const [features, setFeatures] = useState({});
+  const [featBusy, setFeatBusy] = useState(false);
   const [showTransfer, setShowTransfer] = useState(false);
   const [coachList, setCoachList] = useState([]);
   const [transferTo, setTransferTo] = useState("");
@@ -6129,6 +6135,43 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
       alert(err.message || "Could not update services");
     }
     setSvcBusy(false);
+  };
+
+  useEffect(() => {
+    let ignore = false;
+    (async () => {
+      if (!athlete?.id || !token) return;
+      try {
+        const r = await apiFetch(`/athletes/${athlete.id}/features`, token);
+        if (ignore) return;
+        setFeatureCatalog(Array.isArray(r?.catalog) ? r.catalog : []);
+        setFeatures(r?.features || {});
+      } catch {
+        // An older server without this route just means no row is drawn,
+        // rather than a broken client page.
+      }
+    })();
+    return () => { ignore = true; };
+  }, [athlete?.id, token]);
+
+  // Optimistic, with a rollback: a coach flicking several of these in a row
+  // shouldn't wait on a round trip each time, but a rejected change must not
+  // leave the chip showing a state the server never accepted.
+  const setFeature = async (key, on) => {
+    const prev = features;
+    setFeatures((f) => ({ ...f, [key]: on }));
+    setFeatBusy(true);
+    try {
+      const r = await apiFetch(`/athletes/${athlete.id}/features`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ features: { [key]: on } }),
+      });
+      if (r?.features) setFeatures(r.features);
+    } catch (err) {
+      setFeatures(prev);
+      alert(err.message || "Could not update what this client sees");
+    }
+    setFeatBusy(false);
   };
 
   // ── Header shows the PER-DAY plan target for TODAY (live) ────────────────────
@@ -6286,6 +6329,46 @@ function AthleteDetail({ athlete, token, onBack, onDelete }) {
             </label>
           ))}
         </div>
+
+        {/* Which trackers show on this client's hub. Everything is on until a
+            coach switches it off, so a client who never measures their waist
+            stops scrolling past a measurements card. */}
+        {featureCatalog.length > 0 && (
+          <div
+            style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}
+            title="What this client sees on their hub"
+          >
+            <span style={{ fontFamily: "DM Sans", fontSize: 10, color: T.muted, letterSpacing: 1, textTransform: "uppercase" }}>
+              Hub
+            </span>
+            {featureCatalog.map((f) => {
+              const on = features[f.key] !== false;
+              return (
+                <label
+                  key={f.key}
+                  title={f.blurb || ""}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6,
+                    fontFamily: "DM Sans", fontSize: 11,
+                    color: on ? T.coachGreen : T.muted,
+                    cursor: featBusy ? "default" : "pointer",
+                    border: `1px solid ${on ? T.coachGreen : T.border}`,
+                    borderRadius: 8, padding: "6px 12px",
+                    opacity: featBusy ? 0.6 : 1,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={on}
+                    disabled={featBusy}
+                    onChange={(e) => setFeature(f.key, e.target.checked)}
+                  />
+                  {f.label}
+                </label>
+              );
+            })}
+          </div>
+        )}
 
         {/* Pause / Unpause */}
         <button
